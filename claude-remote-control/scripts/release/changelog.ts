@@ -42,15 +42,23 @@ function getTypeDisplayName(type: string): string {
 /**
  * Order of types in changelog (most important first)
  */
-const TYPE_ORDER = ['feat', 'fix', 'perf', 'refactor', 'docs', 'style', 'test', 'ci', 'build', 'chore'];
+const TYPE_ORDER = [
+  'feat',
+  'fix',
+  'perf',
+  'refactor',
+  'docs',
+  'style',
+  'test',
+  'ci',
+  'build',
+  'chore',
+];
 
 /**
  * Generate a changelog entry for a version
  */
-export function generateChangelogEntry(
-  version: string,
-  commits: ConventionalCommit[]
-): string {
+export function generateChangelogEntry(version: string, commits: ConventionalCommit[]): string {
   const date = new Date().toISOString().split('T')[0];
   const grouped = groupCommitsByType(commits);
 

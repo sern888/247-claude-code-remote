@@ -56,6 +56,8 @@ vi.mock('fs', () => ({
 vi.mock('child_process', () => ({
   spawn: vi.fn(),
   execSync: vi.fn(() => 'tmux 3.4'),
+  // `ps` output used to confirm that a PID really is the agent
+  execFileSync: vi.fn(() => '/usr/local/bin/node /mock/agent/dist/index.js\n'),
 }));
 
 // Mock ora - capture messages to output
@@ -139,6 +141,9 @@ describe('247 start workflow', () => {
     // Mock process.kill
     process.kill = createProcessKillMock(runningPids) as any;
 
+    // The spawned agent answers its health check
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }));
+
     // Mock process.exit
     processExitSpy = vi.spyOn(process, 'exit').mockImplementation((code) => {
       throw new Error(`process.exit(${code})`);
@@ -147,6 +152,8 @@ describe('247 start workflow', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
     process.kill = originalKill;
   });
 
@@ -174,6 +181,20 @@ describe('247 start workflow', () => {
       ).rejects.toThrow('process.exit(1)');
 
       expect(output.logs.some((l) => l.includes('nonexistent'))).toBe(true);
+    });
+
+    it('rejects an unsafe profile name before touching the filesystem', async () => {
+      setupExistingConfig(fsState);
+      const { spawn } = await import('child_process');
+
+      const { startCommand } = await import('../../src/commands/start.js');
+
+      await expect(
+        startCommand.parseAsync(['node', '247', 'start', '--profile', '../../etc/passwd'])
+      ).rejects.toThrow('process.exit(1)');
+
+      expect(output.errors.join(' ')).toContain('Invalid profile name');
+      expect(spawn).not.toHaveBeenCalled();
     });
   });
 
@@ -232,6 +253,106 @@ describe('247 start workflow', () => {
       );
     });
 
+    it('tells the agent which port and profile to use', async () => {
+      const profileConfig = { ...validConfig, agent: { port: 5000 } };
+      fsState.files.set(`${mockPaths.profilesDir}/dev.json`, JSON.stringify(profileConfig));
+
+      const { spawn } = await import('child_process');
+      vi.mocked(spawn).mockReturnValue(createMockChild({ pid: 77777 }) as any);
+      runningPids.add(77777);
+
+      const { startCommand } = await import('../../src/commands/start.js');
+      await startCommand.parseAsync(['node', '247', 'start', '--profile', 'dev']);
+
+      const env = vi.mocked(spawn).mock.calls[0][2]?.env;
+      expect(env?.AGENT_247_PORT).toBe('5000');
+      expect(env?.AGENT_247_PROFILE).toBe('dev');
+      expect(fetch).toHaveBeenCalledWith('http://localhost:5000/health', expect.any(Object));
+    });
+
+    it('reports success only after the agent answers its health check', async () => {
+      const { spawn } = await import('child_process');
+      vi.mocked(spawn).mockReturnValue(createMockChild({ pid: 99999 }) as any);
+      runningPids.add(99999);
+
+      const { startCommand } = await import('../../src/commands/start.js');
+      await startCommand.parseAsync(['node', '247', 'start']);
+
+      expect(output.logs.some((l) => l.includes('Agent started (PID: 99999)'))).toBe(true);
+      expect(output.logs.some((l) => l.includes('Agent running on'))).toBe(true);
+    });
+
+    it('warns instead of claiming success when the agent never answers', async () => {
+      vi.useFakeTimers();
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')));
+      const { spawn } = await import('child_process');
+      vi.mocked(spawn).mockReturnValue(createMockChild({ pid: 99999 }) as any);
+      runningPids.add(99999);
+
+      const { startCommand } = await import('../../src/commands/start.js');
+      const pending = startCommand.parseAsync(['node', '247', 'start']);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await pending;
+
+      expect(output.logs.some((l) => l.includes('not answering'))).toBe(true);
+      expect(output.logs.some((l) => l.includes('Agent running on'))).toBe(false);
+    });
+
+    it('fails when the agent dies during startup', async () => {
+      const { spawn } = await import('child_process');
+      vi.mocked(spawn).mockReturnValue(createMockChild({ pid: 99999 }) as any);
+      // PID 99999 is never marked as running: the process is already gone
+
+      const { startCommand } = await import('../../src/commands/start.js');
+
+      await expect(startCommand.parseAsync(['node', '247', 'start'])).rejects.toThrow(
+        'process.exit(1)'
+      );
+
+      expect(output.logs.some((l) => l.includes('exited during startup'))).toBe(true);
+      expect(fsState.files.has(mockPaths.pidFile)).toBe(false);
+    });
+
+    describe('in foreground mode', () => {
+      const startInForeground = async () => {
+        const { spawn } = await import('child_process');
+        const mockChild = createMockChild({ pid: 66666 });
+        vi.mocked(spawn).mockReturnValue(mockChild as any);
+
+        const { startCommand } = await import('../../src/commands/start.js');
+        await startCommand.parseAsync(['node', '247', 'start', '--foreground']);
+
+        return { spawn, mockChild };
+      };
+
+      it('passes the port to the agent and attaches it to the terminal', async () => {
+        const { spawn, mockChild } = await startInForeground();
+
+        const options = vi.mocked(spawn).mock.calls[0][2];
+        expect(options?.stdio).toBe('inherit');
+        expect(options?.env?.AGENT_247_PORT).toBe(String(validConfig.agent.port));
+        expect(options?.env).not.toHaveProperty('AGENT_247_DATA');
+
+        // Finish the child so the signal listeners are removed again
+        expect(() => mockChild.emit('exit', 0, null)).toThrow('process.exit(0)');
+      });
+
+      it.each(['SIGINT', 'SIGTERM'] as const)('forwards %s to the agent', async (signal) => {
+        const { mockChild } = await startInForeground();
+
+        process.emit(signal);
+
+        expect(mockChild.kill).toHaveBeenCalledWith(signal);
+        expect(() => mockChild.emit('exit', 0, null)).toThrow('process.exit(0)');
+      });
+
+      it("exits with the agent's exit code", async () => {
+        const { mockChild } = await startInForeground();
+
+        expect(() => mockChild.emit('exit', 7, null)).toThrow('process.exit(7)');
+      });
+    });
+
     it('loads profile config when --profile is specified', async () => {
       // Create profile config
       const profileConfig = { ...validConfig, agent: { port: 5000 } };
@@ -265,6 +386,9 @@ describe('247 stop workflow', () => {
     // Mock process.kill
     process.kill = createProcessKillMock(runningPids) as any;
 
+    // The spawned agent answers its health check
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }));
+
     // Mock process.exit
     processExitSpy = vi.spyOn(process, 'exit').mockImplementation((code) => {
       throw new Error(`process.exit(${code})`);
@@ -273,6 +397,8 @@ describe('247 stop workflow', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
     process.kill = originalKill;
   });
 

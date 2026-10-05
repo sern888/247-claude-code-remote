@@ -117,9 +117,44 @@ describe('Agent Config', () => {
       mockedExistsSync.mockReturnValue(true);
       mockedReadFileSync.mockReturnValue('{ invalid json }');
 
-      // Module import will throw because loadConfig() is called at module load time
-      // and invalid JSON falls through to the "no config found" error
-      await expect(import('../../src/config.js')).rejects.toThrow('No configuration found');
+      // Module import will throw because loadConfig() is called at module load time.
+      // The error names the broken file instead of claiming there is no config.
+      await expect(import('../../src/config.js')).rejects.toThrow('Invalid configuration at');
+    });
+
+    it('does not fall back to the default config when the profile file is corrupt', async () => {
+      process.env.AGENT_247_PROFILE = 'dev';
+
+      const { existsSync, readFileSync } = await import('fs');
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockImplementation((path) =>
+        String(path).includes('profiles') ? '{ invalid json }' : JSON.stringify(validConfig)
+      );
+
+      // Falling back would start the agent with another machine id and port
+      await expect(import('../../src/config.js')).rejects.toThrow(
+        /Invalid configuration at .*dev\.json/
+      );
+    });
+
+    it('rejects a config without the fields the agent needs', async () => {
+      const { existsSync, readFileSync } = await import('fs');
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(JSON.stringify({ agent: { port: 4678 } }));
+
+      await expect(import('../../src/config.js')).rejects.toThrow('"machine.id"');
+    });
+
+    it('treats a missing whitelist as empty', async () => {
+      const { existsSync, readFileSync } = await import('fs');
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(
+        JSON.stringify({ machine: { id: 'm', name: 'M' }, projects: { basePath: '~/Dev' } })
+      );
+
+      const { config } = await import('../../src/config.js');
+
+      expect(config.projects.whitelist).toEqual([]);
     });
   });
 });

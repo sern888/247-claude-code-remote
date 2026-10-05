@@ -1,20 +1,14 @@
 name: Release CLI
 
 on:
+  # Releases are cut with `pnpm release` (see CLAUDE.md), which bumps every
+  # package and pushes the tag that triggers this workflow.
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version bump type'
-        required: true
-        default: 'patch'
-        type: choice
-        options:
-          - patch
-          - minor
-          - major
+
+permissions:
+  contents: read
 
 jobs:
   release:
@@ -53,42 +47,29 @@ jobs:
         working-directory: claude-remote-control/packages/cli
         run: pnpm bundle
 
-      - name: Configure Git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      # For manual dispatch: bump version and create tag
-      - name: Bump version (manual dispatch)
-        if: github.event_name == 'workflow_dispatch'
-        working-directory: claude-remote-control/packages/cli
-        run: |
-          npm version ${{ inputs.version }} -m "chore(release): v%s"
-          echo "NEW_VERSION=$(node -p "require('./package.json').version")" >> $GITHUB_ENV
-
-      - name: Push version bump
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          git push origin main
-          git push origin v${{ env.NEW_VERSION }}
-
-      # For tag push: extract version from tag and update package.json
+      # Extract the version from the tag. Only a plain semver may reach npm:
+      # the tag name is otherwise attacker-influenced text used in shell steps.
       - name: Get version from tag
-        if: github.event_name == 'push'
         run: |
-          echo "NEW_VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Tag '$GITHUB_REF' is not a vMAJOR.MINOR.PATCH release tag" >&2
+            exit 1
+          fi
+          echo "NEW_VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Update package.json version
-        if: github.event_name == 'push'
         working-directory: claude-remote-control/packages/cli
         run: |
-          npm version ${{ env.NEW_VERSION }} --no-git-tag-version --allow-same-version
+          npm version "$NEW_VERSION" --no-git-tag-version --allow-same-version
 
       - name: Verify version before publish
         working-directory: claude-remote-control/packages/cli
         run: |
-          echo "Package version: $(node -p "require('./package.json').version")"
-          echo "Expected version: ${{ env.NEW_VERSION }}"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          echo "Package version: $PACKAGE_VERSION"
+          echo "Expected version: $NEW_VERSION"
+          test "$PACKAGE_VERSION" = "$NEW_VERSION"
 
       - name: Publish to npm
         working-directory: claude-remote-control/packages/cli

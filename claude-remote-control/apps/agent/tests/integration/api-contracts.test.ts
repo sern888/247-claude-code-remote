@@ -38,10 +38,12 @@ vi.mock('fs/promises', () => ({
 
 // Mock child_process
 vi.mock('child_process', () => ({
-  exec: vi.fn((cmd, opts, cb) => {
+  // tmux is invoked through execFile with an argument array (never a shell string)
+  execFile: vi.fn((_file, _args, opts, cb) => {
     const callback = typeof opts === 'function' ? opts : cb;
     if (callback) callback(null, { stdout: '', stderr: '' });
   }),
+  execFileSync: vi.fn(() => ''),
   execSync: vi.fn(() => ''),
   spawn: vi.fn(() => {
     const proc = new EventEmitter() as any;
@@ -150,8 +152,8 @@ describe('API Response Contract Tests', () => {
 
   describe('GET /api/sessions', () => {
     it('returns array of valid WSSessionInfo', async () => {
-      const { exec } = await import('child_process');
-      vi.mocked(exec).mockImplementation((cmd: any, opts: any, cb: any) => {
+      const { execFile } = await import('child_process');
+      vi.mocked(execFile).mockImplementation((_file: any, _args: any, opts: any, cb: any) => {
         const callback = typeof opts === 'function' ? opts : cb;
         // Mock tmux output: session_name|session_created (unix timestamp)
         const mockOutput = 'test--session-1|1704067200\ntest--session-2|1704067300\n';
@@ -172,10 +174,11 @@ describe('API Response Contract Tests', () => {
     });
 
     it('returns empty array when no sessions', async () => {
-      const { exec } = await import('child_process');
-      vi.mocked(exec).mockImplementation((cmd: any, opts: any, cb: any) => {
+      const { execFile } = await import('child_process');
+      vi.mocked(execFile).mockImplementation((_file: any, _args: any, opts: any, cb: any) => {
         const callback = typeof opts === 'function' ? opts : cb;
-        if (callback) callback(new Error('no sessions'), null, null);
+        // tmux exits with code 1 when its server is not running (no sessions yet)
+        if (callback) callback(Object.assign(new Error('no server running'), { code: 1 }));
         return null as any;
       });
 
@@ -188,8 +191,8 @@ describe('API Response Contract Tests', () => {
 
   describe('Session Preview Endpoint', () => {
     it('returns preview with expected structure', async () => {
-      const { exec } = await import('child_process');
-      vi.mocked(exec).mockImplementation((cmd: any, opts: any, cb: any) => {
+      const { execFile } = await import('child_process');
+      vi.mocked(execFile).mockImplementation((_file: any, _args: any, opts: any, cb: any) => {
         const callback = typeof opts === 'function' ? opts : cb;
         if (callback) callback(null, { stdout: '$ echo hello\nhello\n$ ', stderr: '' });
         return null as any;

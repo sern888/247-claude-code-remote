@@ -289,6 +289,33 @@ describe('247 init workflow', () => {
     });
   });
 
+  describe('input validation', () => {
+    it.each(['abc', '0', '70000'])(
+      'exits with a clear error and writes nothing for port %j',
+      async (port) => {
+        const { initCommand } = await import('../../src/commands/init.js');
+
+        await expect(
+          initCommand.parseAsync(['node', '247', 'init', '--name', 'test', '--port', port])
+        ).rejects.toThrow('process.exit(1)');
+
+        expect(output.errors.join(' ')).toContain('must be an integer between 1 and 65535');
+        expect(fsState.files.has(mockPaths.configPath)).toBe(false);
+      }
+    );
+
+    it('exits with a clear error for an unsafe profile name', async () => {
+      const { initCommand } = await import('../../src/commands/init.js');
+
+      await expect(
+        initCommand.parseAsync(['node', '247', 'init', '--name', 'test', '--profile', '../evil'])
+      ).rejects.toThrow('process.exit(1)');
+
+      expect(output.errors.join(' ')).toContain('Invalid profile name');
+      expect([...fsState.files.keys()].some((path) => path.includes('evil'))).toBe(false);
+    });
+  });
+
   describe('statusLine configuration', () => {
     it('completes without mentioning hooks (deprecated)', async () => {
       promptResponses = [{ machineName: 'test' }, { projectsPath: '~/Dev' }];

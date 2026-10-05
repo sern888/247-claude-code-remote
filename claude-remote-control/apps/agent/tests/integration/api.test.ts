@@ -37,10 +37,12 @@ vi.mock('fs/promises', () => ({
 
 // Mock child_process
 vi.mock('child_process', () => ({
-  exec: vi.fn((cmd, opts, cb) => {
+  // tmux is invoked through execFile with an argument array (never a shell string)
+  execFile: vi.fn((_file, _args, opts, cb) => {
     const callback = typeof opts === 'function' ? opts : cb;
     if (callback) callback(null, { stdout: '', stderr: '' });
   }),
+  execFileSync: vi.fn(() => ''),
   execSync: vi.fn(() => ''),
   spawn: vi.fn(() => {
     const proc = new EventEmitter() as any;
@@ -130,10 +132,11 @@ describe('Agent REST API', () => {
 
   describe('GET /api/sessions', () => {
     it('returns empty array when no sessions', async () => {
-      const { exec } = await import('child_process');
-      vi.mocked(exec).mockImplementation((cmd: any, opts: any, cb: any) => {
+      // tmux exits with code 1 when its server is not running (no sessions yet)
+      const { execFile } = await import('child_process');
+      vi.mocked(execFile).mockImplementation((_file: any, _args: any, opts: any, cb: any) => {
         const callback = typeof opts === 'function' ? opts : cb;
-        if (callback) callback(new Error('no sessions'), null, null);
+        if (callback) callback(Object.assign(new Error('no server running'), { code: 1 }));
         return null as any;
       });
 
@@ -141,6 +144,20 @@ describe('Agent REST API', () => {
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual([]);
+    });
+
+    it('reports a failure instead of an empty list when tmux cannot be run', async () => {
+      const { execFile } = await import('child_process');
+      vi.mocked(execFile).mockImplementation((_file: any, _args: any, opts: any, cb: any) => {
+        const callback = typeof opts === 'function' ? opts : cb;
+        if (callback) callback(Object.assign(new Error('spawn tmux ENOENT'), { code: 'ENOENT' }));
+        return null as any;
+      });
+
+      const res = await request(server).get('/api/sessions');
+
+      expect(res.status).toBe(500);
+      expect(res.body).toEqual({ error: 'Failed to list sessions' });
     });
   });
 
@@ -153,8 +170,8 @@ describe('Agent REST API', () => {
     });
 
     it('accepts valid session name', async () => {
-      const { exec } = await import('child_process');
-      vi.mocked(exec).mockImplementation((cmd: any, opts: any, cb: any) => {
+      const { execFile } = await import('child_process');
+      vi.mocked(execFile).mockImplementation((_file: any, _args: any, opts: any, cb: any) => {
         const callback = typeof opts === 'function' ? opts : cb;
         if (callback) callback(null, { stdout: 'line1\nline2\n', stderr: '' });
         return null as any;
@@ -173,6 +190,101 @@ describe('Agent REST API', () => {
 
       expect(res.status).toBe(400);
       expect(res.body.error).toBe('Invalid session name');
+    });
+  });
+
+  describe('Origin allowlist', () => {
+    it('rejects requests from a browser origin that is not the dashboard', async () => {
+      const res = await request(server)
+        .get('/api/projects')
+        .set('Origin', 'https://evil.example.com');
+
+      expect(res.status).toBe(403);
+      expect(res.body).toEqual({ error: 'Origin not allowed' });
+      expect(res.headers['access-control-allow-origin']).toBeUndefined();
+    });
+
+    it('rejects state-changing requests from an unknown origin before they run', async () => {
+      const { execFile } = await import('child_process');
+
+      const res = await request(server)
+        .post('/api/sessions/proj--a/input')
+        .set('Origin', 'http://localhost:9999')
+        .send({ text: 'rm -rf ~' });
+
+      expect(res.status).toBe(403);
+      expect(vi.mocked(execFile)).not.toHaveBeenCalled();
+    });
+
+    it('allows the hosted dashboard and answers its CORS check', async () => {
+      const res = await request(server).get('/api/projects').set('Origin', 'https://247.quivr.com');
+
+      expect(res.status).toBe(200);
+      expect(res.headers['access-control-allow-origin']).toBe('https://247.quivr.com');
+    });
+
+    it('allows the dashboard configured in config.dashboard.apiUrl', async () => {
+      const res = await request(server).get('/api/projects').set('Origin', 'http://localhost:3001');
+
+      expect(res.status).toBe(200);
+    });
+
+    it('allows clients that send no Origin header (CLI, hook script)', async () => {
+      const res = await request(server).get('/health');
+
+      expect(res.status).toBe(200);
+    });
+  });
+
+  describe('POST /api/sessions/:sessionName/input', () => {
+    it('requires text', async () => {
+      const res = await request(server).post('/api/sessions/proj--a/input').send({});
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ success: false, error: 'Text is required' });
+    });
+
+    it('answers 404 without typing anything when the session does not exist', async () => {
+      const { execFile } = await import('child_process');
+      vi.mocked(execFile).mockImplementation((_file: any, _args: any, opts: any, cb: any) => {
+        const callback = typeof opts === 'function' ? opts : cb;
+        if (callback) callback(Object.assign(new Error("can't find session"), { code: 1 }));
+        return null as any;
+      });
+
+      const res = await request(server)
+        .post('/api/sessions/proj--a/input')
+        .send({ text: '$(touch /tmp/pwned)' });
+
+      expect(res.status).toBe(404);
+      const sentKeys = vi
+        .mocked(execFile)
+        .mock.calls.filter(([, args]) => (args as string[])[0] === 'send-keys');
+      expect(sentKeys).toHaveLength(0);
+    });
+  });
+
+  describe('POST /api/clone', () => {
+    it.each([
+      ['an option-like repository name', 'git@host:--config=core.sshCommand=touch pwned'],
+      ['a dash-prefixed name', 'https://example.com/user/-oProxyCommand=evil'],
+      ['a URL without a repository name', 'https://example.com/user/..'],
+    ])('rejects %s without running git', async (_label, url) => {
+      const { spawn } = await import('child_process');
+
+      const res = await request(server).post('/api/clone').send({ url });
+
+      expect(res.status).toBe(400);
+      expect(res.body.success).toBe(false);
+      expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+    });
+
+    it('rejects a non-string url', async () => {
+      const res = await request(server)
+        .post('/api/clone')
+        .send({ url: { evil: true } });
+
+      expect(res.status).toBe(400);
     });
   });
 });

@@ -7,6 +7,18 @@ set -euo pipefail
 echo "Deploying 247 Agent to Railway..."
 echo ""
 
+# The agent has no authentication. Deploying it behind a public URL gives a
+# shell in the container (and ANTHROPIC_API_KEY) to anyone who finds that URL.
+if [ "${ALLOW_PUBLIC_AGENT:-}" != "1" ]; then
+    echo "Refusing to deploy: 'railway domain' publishes the agent on a public URL"
+    echo "and the agent has no authentication. Anyone who learns the URL can open a"
+    echo "terminal in the container and read its secrets."
+    echo ""
+    echo "Keep the service on Railway's private network, or re-run with"
+    echo "ALLOW_PUBLIC_AGENT=1 if you accept the risk."
+    exit 1
+fi
+
 # Check railway CLI is installed
 if ! command -v railway &> /dev/null; then
     echo "Error: railway CLI not found."

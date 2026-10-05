@@ -1,136 +1,167 @@
 import { NextResponse } from 'next/server';
-import { lookupPairingCode } from '@/lib/pairing-codes';
+import { resolveAgentBaseUrl } from '@/lib/host-validation';
+import { lookupUsablePairingCode } from '../_lib/pairing-code-usage';
+import {
+  isBoundedString,
+  isJsonObject,
+  readJsonObject,
+  type ValidationResult,
+} from '../../_lib/request';
 
-/**
- * Decode a token without verifying signature.
- * The signature will be verified by pinging the agent.
- */
-function decodeToken(token: string): { payload: Record<string, unknown> | null; error?: string } {
-  try {
-    const [payloadStr] = token.split('.');
-    if (!payloadStr) {
-      return { payload: null, error: 'Invalid token format' };
-    }
+const PAIRING_CODE_PATTERN = /^\d{6}$/;
+const MAX_TOKEN_LENGTH = 4096;
+const MAX_MACHINE_ID_LENGTH = 100;
+const MAX_MACHINE_NAME_LENGTH = 100;
+const AGENT_VERIFY_PATH = '/api/pair/verify';
+const AGENT_VERIFY_TIMEOUT_MS = 5000;
 
-    const payload = JSON.parse(Buffer.from(payloadStr, 'base64url').toString());
+interface TokenPayload {
+  machineId: string;
+  machineName: string;
+  agentUrl: string;
+}
 
-    // Check expiry
-    if (payload.exp && payload.exp < Date.now()) {
-      return { payload: null, error: 'Token expired' };
-    }
-
-    return { payload };
-  } catch {
-    return { payload: null, error: 'Failed to parse token' };
-  }
+function invalid(error: string, status: number) {
+  return NextResponse.json({ valid: false, error }, { status });
 }
 
 /**
- * Verify a token by pinging the agent
+ * Decode a token WITHOUT verifying its signature: only the agent holds the secret.
+ * Everything in the payload is therefore untrusted input and is validated here; the
+ * signature is checked by asking the agent (see verifyWithAgent).
  */
-async function verifyWithAgent(
-  agentUrl: string,
-  token: string
-): Promise<{ valid: boolean; error?: string }> {
-  try {
-    // Determine protocol - use HTTPS for Tailscale/remote, HTTP for localhost
-    const isLocalhost = agentUrl.startsWith('localhost') || agentUrl.startsWith('127.0.0.1');
-    const protocol = isLocalhost ? 'http' : 'https';
-    const url = `${protocol}://${agentUrl}/api/pair/verify`;
+function decodeToken(token: string): ValidationResult<TokenPayload> {
+  const [payloadStr] = token.split('.');
+  if (!payloadStr) {
+    return { ok: false, error: 'Invalid token format' };
+  }
 
-    const res = await fetch(url, {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(Buffer.from(payloadStr, 'base64url').toString());
+  } catch {
+    return { ok: false, error: 'Failed to parse token' };
+  }
+
+  if (!isJsonObject(payload)) {
+    return { ok: false, error: 'Failed to parse token' };
+  }
+  if (typeof payload.exp === 'number' && payload.exp < Date.now()) {
+    return { ok: false, error: 'Token expired' };
+  }
+
+  const { mid, mn, url } = payload;
+  const isComplete =
+    isBoundedString(mid, MAX_MACHINE_ID_LENGTH) &&
+    isBoundedString(mn, MAX_MACHINE_NAME_LENGTH) &&
+    typeof url === 'string' &&
+    url.length > 0;
+  if (!isComplete) {
+    return { ok: false, error: 'Incomplete token payload' };
+  }
+
+  return { ok: true, value: { machineId: mid, machineName: mn, agentUrl: url } };
+}
+
+/**
+ * Ask the agent to verify the token signature.
+ * Returns true ONLY when the agent answered 2xx with `{ valid: true }`. Unreachable agent,
+ * timeout, redirect, error status or unexpected body all mean "not verified".
+ */
+async function verifyWithAgent(baseUrl: string, token: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${baseUrl}${AGENT_VERIFY_PATH}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token }),
-      // Short timeout for verification
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(AGENT_VERIFY_TIMEOUT_MS),
+      redirect: 'error',
     });
 
     if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      return { valid: false, error: data.error || 'Agent rejected token' };
+      return false;
     }
 
-    return { valid: true };
+    const data: unknown = await res.json();
+    return isJsonObject(data) && data.valid === true;
   } catch {
-    // Agent might not be reachable - that's OK for now, we'll verify on connection
-    // Just decode the token and trust the payload
-    return { valid: true };
+    // Unreachable agent / timeout / redirect / non-JSON body: the token stays unverified
+    return false;
   }
 }
 
+function validateCode(code: unknown) {
+  if (typeof code !== 'string' || !PAIRING_CODE_PATTERN.test(code)) {
+    return invalid('Invalid or expired code', 400);
+  }
+
+  // Not consumed here: the connect page validates on mount (twice under React StrictMode)
+  // and must be able to show the agent before the user confirms. A code already consumed
+  // through GET /api/pair/code is refused.
+  const codeInfo = lookupUsablePairingCode(code);
+  if (!codeInfo) {
+    return invalid('Invalid or expired code', 400);
+  }
+
+  return NextResponse.json({
+    valid: true,
+    machineId: codeInfo.machineId,
+    machineName: codeInfo.machineName,
+    agentUrl: codeInfo.agentUrl,
+  });
+}
+
+async function validateToken(token: unknown) {
+  if (typeof token !== 'string' || token.length === 0 || token.length > MAX_TOKEN_LENGTH) {
+    return invalid('Token or code is required', 400);
+  }
+
+  const decoded = decodeToken(token);
+  if (!decoded.ok) {
+    return invalid(decoded.error, 400);
+  }
+
+  const isProduction = process.env.NODE_ENV === 'production';
+  const target = resolveAgentBaseUrl(decoded.value.agentUrl, { isProduction });
+
+  // Not a strict hostname[:port]: refuse the token outright, nothing is fetched
+  if (!target.ok && target.reason === 'invalid') {
+    return invalid('Invalid agent URL in token', 400);
+  }
+
+  // 'blocked' = loopback/private host seen by the production server. The server must not
+  // call it, but the user's browser legitimately can (agent on their own machine), so the
+  // pairing info is returned as unverified and the agent authenticates the real connection.
+  const verified = target.ok ? await verifyWithAgent(target.baseUrl, token) : false;
+
+  if (!verified) {
+    console.warn(
+      `Pairing token not verified by agent (${target.ok ? target.host : 'host not allowed'})`
+    );
+  }
+
+  return NextResponse.json({ valid: true, ...decoded.value, verified });
+}
+
+/**
+ * POST /api/pair/validate
+ *
+ * Contract:
+ * - `valid`: the token/code is well-formed, complete and not expired
+ * - `verified` (tokens only): the agent itself confirmed the token signature. It is false
+ *   whenever the agent could not be asked or did not confirm — never true by default.
+ */
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
+    const body = await readJsonObject(req);
+    if (!body) {
+      return invalid('Request body must be a JSON object', 400);
+    }
+
     const { token, code } = body;
-
-    // Handle code-based pairing
-    if (code) {
-      const codeInfo = lookupPairingCode(code);
-
-      if (!codeInfo) {
-        return NextResponse.json(
-          { valid: false, error: 'Invalid or expired code' },
-          { status: 400 }
-        );
-      }
-
-      return NextResponse.json({
-        valid: true,
-        machineId: codeInfo.machineId,
-        machineName: codeInfo.machineName,
-        agentUrl: codeInfo.agentUrl,
-      });
-    }
-
-    // Handle token-based pairing
-    if (!token || typeof token !== 'string') {
-      return NextResponse.json(
-        { valid: false, error: 'Token or code is required' },
-        { status: 400 }
-      );
-    }
-
-    // Decode token
-    const { payload, error } = decodeToken(token);
-
-    if (!payload || error) {
-      return NextResponse.json({ valid: false, error: error || 'Invalid token' }, { status: 400 });
-    }
-
-    const machineId = payload.mid as string;
-    const machineName = payload.mn as string;
-    const agentUrl = payload.url as string;
-
-    if (!machineId || !machineName || !agentUrl) {
-      return NextResponse.json(
-        { valid: false, error: 'Incomplete token payload' },
-        { status: 400 }
-      );
-    }
-
-    // Optionally verify with agent (non-blocking for UX)
-    // The agent will validate when we actually connect
-    const verification = await verifyWithAgent(agentUrl, token);
-
-    if (!verification.valid) {
-      // Still return the info but note the verification failed
-      // This allows connecting even if agent is temporarily unreachable
-      console.warn(`Token verification failed for ${agentUrl}: ${verification.error}`);
-    }
-
-    return NextResponse.json({
-      valid: true,
-      machineId,
-      machineName,
-      agentUrl,
-      verified: verification.valid,
-    });
+    return code ? validateCode(code) : await validateToken(token);
   } catch (error) {
     console.error('Error validating pairing:', error);
-    return NextResponse.json(
-      { valid: false, error: 'Failed to validate pairing' },
-      { status: 500 }
-    );
+    return invalid('Failed to validate pairing', 500);
   }
 }

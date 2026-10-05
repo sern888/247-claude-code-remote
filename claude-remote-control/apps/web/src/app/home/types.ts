@@ -15,6 +15,8 @@ export interface SelectedSession {
   project: string;
   environmentId?: string;
   planningProjectId?: string;
+  /** Stable React key for the session view, set when the session is started from the dashboard. */
+  viewKey?: string;
 }
 
 // Re-export StoredAgentConnection from AgentConnectionSettings for convenience

@@ -5,7 +5,6 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Menu,
   Plus,
-  Settings,
   User,
   LogOut,
   ChevronRight,
@@ -17,6 +16,7 @@ import {
 import { cn } from '@/lib/utils';
 import { spring } from '@/lib/animations';
 import { authClient } from '@/lib/auth-client';
+import { useEscapeKey } from '@/components/ui/SlideOverPanel';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Types
@@ -47,6 +47,9 @@ function UserMenu({ onOpenNotificationSettings }: UserMenuProps) {
   const [open, setOpen] = useState(false);
   const [user, setUser] = useState<{ name: string; email: string; initials: string } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  // Escape closes the menu wherever the focus is (listens on the document while open)
+  useEscapeKey(open, () => setOpen(false));
 
   // Fetch real user data from session
   useEffect(() => {
@@ -126,15 +129,8 @@ function UserMenu({ onOpenNotificationSettings }: UserMenuProps) {
       <AnimatePresence>
         {open && (
           <>
-            {/* Backdrop */}
-            <div
-              className="fixed inset-0 z-40"
-              onClick={() => setOpen(false)}
-              onKeyDown={(e) => e.key === 'Escape' && setOpen(false)}
-              role="button"
-              tabIndex={-1}
-              aria-label="Close menu"
-            />
+            {/* Backdrop: click-away target for the mouse. Keyboard users close with Escape. */}
+            <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} aria-hidden="true" />
 
             {/* Dropdown */}
             <motion.div
@@ -156,32 +152,26 @@ function UserMenu({ onOpenNotificationSettings }: UserMenuProps) {
               </div>
 
               {/* Menu items */}
-              <button className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-white/70 hover:bg-white/5 hover:text-white/90">
-                <User className="h-4 w-4" />
-                Profile
-              </button>
-              <button className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-white/70 hover:bg-white/5 hover:text-white/90">
-                <Settings className="h-4 w-4" />
-                Settings
-              </button>
               <button
+                type="button"
                 onClick={() => {
                   setOpen(false);
                   onOpenNotificationSettings?.();
                 }}
                 className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-white/70 hover:bg-white/5 hover:text-white/90"
               >
-                <Bell className="h-4 w-4" />
+                <Bell className="h-4 w-4" aria-hidden="true" />
                 Notifications
               </button>
 
               <div className="my-1 h-px bg-white/5" />
 
               <button
+                type="button"
                 onClick={handleLogout}
                 className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-red-400 hover:bg-red-500/10"
               >
-                <LogOut className="h-4 w-4" />
+                <LogOut className="h-4 w-4" aria-hidden="true" />
                 Sign out
               </button>
             </motion.div>

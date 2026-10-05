@@ -4,7 +4,54 @@
 
 import { Router } from 'express';
 import { spawn } from 'child_process';
+import { access, readdir } from 'fs/promises';
 import { config } from '../config.js';
+import { logger } from '../logger.js';
+import { expandHome, isValidRepoName, resolveInsideBase } from '../lib/validation.js';
+
+const CLONE_TIMEOUT_MS = 5 * 60 * 1000;
+const HTTPS_URL_PATTERN = /^https:\/\/.+\/.+/;
+const SSH_URL_PATTERN = /^git@.+:.+/;
+// user:password@ inside a URL that git may echo back in its error output
+const URL_CREDENTIALS_PATTERN = /\/\/[^/\s@]+@/g;
+
+/**
+ * Derive the directory name git would clone into.
+ * Returns '' when the URL has no usable last path segment.
+ */
+function extractRepoName(url: string): string {
+  if (url.startsWith('git@')) {
+    // git@github.com:user/repo.git -> repo
+    const pathPart = url.slice(url.indexOf(':') + 1);
+    return (
+      pathPart
+        .split('/')
+        .filter(Boolean)
+        .pop()
+        ?.replace(/\.git$/, '') ?? ''
+    );
+  }
+  // https://github.com/user/repo.git -> repo
+  const pathParts = new URL(url).pathname.split('/').filter(Boolean);
+  return pathParts[pathParts.length - 1]?.replace(/\.git$/, '') ?? '';
+}
+
+/**
+ * Last line of git's error output with any credentials removed.
+ */
+function summarizeGitError(stderr: string): string {
+  const lastLine = stderr.trim().split('\n').pop() ?? '';
+  return lastLine.replace(URL_CREDENTIALS_PATTERN, '//***@') || 'Git clone failed';
+}
+
+async function pathExists(target: string): Promise<boolean> {
+  try {
+    await access(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export function createProjectRoutes(): Router {
   const router = Router();
@@ -17,10 +64,9 @@ export function createProjectRoutes(): Router {
   // Dynamic folder listing - scans basePath for directories
   router.get('/folders', async (_req, res) => {
     try {
-      const fs = await import('fs/promises');
-      const basePath = config.projects.basePath.replace('~', process.env.HOME!);
+      const basePath = expandHome(config.projects.basePath);
 
-      const entries = await fs.readdir(basePath, { withFileTypes: true });
+      const entries = await readdir(basePath, { withFileTypes: true });
       const folders = entries
         .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
         .map((entry) => entry.name)
@@ -28,71 +74,56 @@ export function createProjectRoutes(): Router {
 
       res.json(folders);
     } catch (err) {
-      console.error('Failed to list folders:', err);
+      logger.server.error({ err }, 'Failed to list folders');
       res.status(500).json({ error: 'Failed to list folders' });
     }
   });
 
   // Clone a git repository
   router.post('/clone', async (req, res) => {
-    const { url } = req.body as { url?: string };
+    const { url } = (req.body ?? {}) as { url?: unknown };
 
-    if (!url) {
+    if (!url || typeof url !== 'string') {
       return res.status(400).json({ success: false, error: 'URL is required' });
     }
 
     // Validate URL format (https:// or git@)
-    const httpsPattern = /^https:\/\/.+\/.+/;
-    const sshPattern = /^git@.+:.+/;
-    if (!httpsPattern.test(url) && !sshPattern.test(url)) {
+    if (!HTTPS_URL_PATTERN.test(url) && !SSH_URL_PATTERN.test(url)) {
       return res.status(400).json({ success: false, error: 'Invalid URL format' });
     }
 
-    // Extract repo name from URL
     let repoName: string;
     try {
-      if (url.startsWith('git@')) {
-        // git@github.com:user/repo.git -> repo
-        const match = url.match(/:([^/]+\/)?(.+?)(\.git)?$/);
-        repoName = match?.[2] || '';
-      } else {
-        // https://github.com/user/repo.git -> repo
-        const urlObj = new URL(url);
-        const pathParts = urlObj.pathname.split('/').filter(Boolean);
-        repoName = pathParts[pathParts.length - 1]?.replace(/\.git$/, '') || '';
-      }
-
-      if (!repoName) {
-        return res
-          .status(400)
-          .json({ success: false, error: 'Could not extract repo name from URL' });
-      }
+      repoName = extractRepoName(url);
     } catch (_err) {
       return res.status(400).json({ success: false, error: 'Invalid URL format' });
     }
 
-    const fs = await import('fs/promises');
-    const path = await import('path');
-    const basePath = config.projects.basePath.replace('~', process.env.HOME!);
-    const targetPath = path.join(basePath, repoName);
+    // The name is passed to git as an argument and joined into a path:
+    // it must not look like an option ("--config=...") or leave basePath.
+    const basePath = expandHome(config.projects.basePath);
+    const targetPath = isValidRepoName(repoName) ? resolveInsideBase(basePath, repoName) : null;
+    if (!targetPath) {
+      return res
+        .status(400)
+        .json({ success: false, error: 'Could not extract repo name from URL' });
+    }
 
-    // Check if folder already exists
-    try {
-      await fs.access(targetPath);
+    if (await pathExists(targetPath)) {
       return res.status(400).json({
         success: false,
         error: `Folder "${repoName}" already exists`,
       });
-    } catch (_err) {
-      // Folder doesn't exist, good to proceed
     }
 
-    // Clone the repository
+    // Clone the repository. "--" ends option parsing; the ext transport
+    // (which runs arbitrary commands) is disabled.
     return new Promise<void>((resolve) => {
-      const gitProcess = spawn('git', ['clone', url, repoName], {
-        cwd: basePath,
-        env: process.env,
-      });
+      const gitProcess = spawn(
+        'git',
+        ['-c', 'protocol.ext.allow=never', 'clone', '--', url, repoName],
+        { cwd: basePath, env: process.env, timeout: CLONE_TIMEOUT_MS }
+      );
 
       let stderr = '';
 
@@ -102,24 +133,22 @@ export function createProjectRoutes(): Router {
 
       gitProcess.on('close', (code) => {
         if (code === 0) {
-          console.log(`Successfully cloned ${url} to ${targetPath}`);
+          logger.server.info({ project: repoName }, 'Cloned repository');
           res.json({
             success: true,
             project: repoName,
             path: targetPath,
           });
         } else {
-          console.error(`Git clone failed: ${stderr}`);
-          res.status(500).json({
-            success: false,
-            error: stderr.trim() || 'Git clone failed',
-          });
+          const error = summarizeGitError(stderr);
+          logger.server.error({ project: repoName, code, error }, 'Git clone failed');
+          res.status(500).json({ success: false, error });
         }
         resolve();
       });
 
       gitProcess.on('error', (err) => {
-        console.error('Failed to spawn git:', err);
+        logger.server.error({ err }, 'Failed to spawn git');
         res.status(500).json({
           success: false,
           error: 'Failed to execute git command',

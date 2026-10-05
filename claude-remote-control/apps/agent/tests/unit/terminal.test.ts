@@ -45,39 +45,26 @@ vi.mock('@homebridge/node-pty-prebuilt-multiarch', () => ({
   spawn: vi.fn(() => mockPtyProcess),
 }));
 
-// Mock child_process
-vi.mock('child_process', () => ({
-  execSync: vi.fn((cmd: string) => {
-    const key = Object.keys(execSyncResponses).find((k) => cmd.includes(k));
-    if (key) {
-      const response = execSyncResponses[key];
-      if (response instanceof Error) throw response;
-      return response;
-    }
-    throw new Error('Command not mocked');
+// Mock the tmux wrapper (its own argv handling is covered by tmux.test.ts).
+// An Error response means "tmux reported the session/pane is not there".
+vi.mock('../../src/lib/tmux.js', () => ({
+  hasSessionSync: vi.fn(() => {
+    const response = execSyncResponses['has-session'];
+    if (response === undefined) throw new Error('Command not mocked');
+    return !(response instanceof Error);
   }),
-  exec: vi.fn(
-    (cmd: string, callback?: (error: Error | null, stdout: string, stderr: string) => void) => {
-      // If callback provided, call it asynchronously
-      if (callback) {
-        setImmediate(() => callback(null, '', ''));
-      }
-    }
-  ),
+  capturePane: vi.fn(async () => {
+    const response = execAsyncResponses['capture-pane'];
+    if (response instanceof Error) throw response;
+    return response?.stdout ?? '';
+  }),
+  enableMouse: vi.fn(),
 }));
 
-// Mock promisify to return our async mock
-vi.mock('util', () => ({
-  promisify: () => async (cmd: string) => {
-    const key = Object.keys(execAsyncResponses).find((k) => cmd.includes(k));
-    if (key) {
-      const response = execAsyncResponses[key];
-      if (response instanceof Error) throw response;
-      return response;
-    }
-    return { stdout: '', stderr: '' };
-  },
-}));
+vi.mock('../../src/logger.js', () => {
+  const channel = () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() });
+  return { logger: { main: channel(), terminal: channel() } };
+});
 
 describe('Terminal', () => {
   beforeEach(() => {
@@ -151,8 +138,42 @@ describe('Terminal', () => {
       const terminal = createTerminal('/tmp/test', 'detach-test');
 
       terminal.detach();
-      // Ctrl+B, d for tmux detach
-      expect(mockPtyProcess.write).toHaveBeenCalledWith('\x02d');
+      // Ending the tmux client detaches without depending on the user's prefix key
+      expect(mockPtyProcess.kill).toHaveBeenCalled();
+      expect(mockPtyProcess.write).not.toHaveBeenCalled();
+    });
+
+    it('rejects session names that are not safe tmux targets', async () => {
+      vi.resetModules();
+      const { createTerminal } = await import('../../src/terminal.js');
+
+      expect(() => createTerminal('/tmp/test', 'x";id;"')).toThrow('Invalid session name');
+      expect(() => createTerminal('/tmp/test', '../../etc/passwd')).toThrow('Invalid session name');
+      expect(writtenInitScripts.length).toBe(0);
+    });
+
+    it('creates sessions with -A so two simultaneous clients do not collide', async () => {
+      execSyncResponses['has-session'] = new Error('not found');
+
+      vi.resetModules();
+      const pty = await import('@homebridge/node-pty-prebuilt-multiarch');
+      const { createTerminal } = await import('../../src/terminal.js');
+      createTerminal('/tmp/test', 'race-test');
+
+      const [, args] = vi.mocked(pty.spawn).mock.calls[0];
+      expect(args).toEqual(expect.arrayContaining(['new-session', '-A', '-s', 'race-test']));
+    });
+
+    it('attaches with an exact-match target', async () => {
+      execSyncResponses['has-session'] = '';
+
+      vi.resetModules();
+      const pty = await import('@homebridge/node-pty-prebuilt-multiarch');
+      const { createTerminal } = await import('../../src/terminal.js');
+      createTerminal('/tmp/test', 'proj');
+
+      const [, args] = vi.mocked(pty.spawn).mock.calls[0];
+      expect(args).toEqual(['attach-session', '-t', '=proj']);
     });
 
     it('captures history from tmux scrollback', async () => {

@@ -7,13 +7,7 @@ import { cn } from '@/lib/utils';
 // ═══════════════════════════════════════════════════════════════════════════
 
 export type SessionStatus =
-  | 'working'
-  | 'needs_attention'
-  | 'permission'
-  | 'idle'
-  | 'success'
-  | 'error'
-  | 'init';
+  'working' | 'needs_attention' | 'permission' | 'idle' | 'success' | 'error' | 'init';
 
 export type ConnectionStatus = 'online' | 'offline' | 'connecting';
 

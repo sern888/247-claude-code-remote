@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { Search, Plus, Archive, Trash2, Clock, X } from 'lucide-react';
 import { format, isToday, isYesterday, startOfDay } from 'date-fns';
 import { cn } from '@/lib/utils';
@@ -21,7 +21,7 @@ export interface SessionListItem {
   createdAt: Date;
   model?: string;
   cost?: number;
-  machineId?: string;
+  machineId: string;
 }
 
 interface DateGroup {
@@ -43,34 +43,33 @@ interface SessionListPanelProps {
 // Utility Functions
 // ═══════════════════════════════════════════════════════════════════════════
 
-function groupSessionsByDate(sessions: SessionListItem[]): DateGroup[] {
+function getDateLabel(updatedAt: Date): string {
+  const date = startOfDay(updatedAt);
+  if (isToday(date)) return 'Today';
+  if (isYesterday(date)) return 'Yesterday';
+  return format(date, 'MMM d');
+}
+
+function byMostRecentlyUpdated(a: SessionListItem, b: SessionListItem): number {
+  return b.updatedAt.getTime() - a.updatedAt.getTime();
+}
+
+function groupSessionsByDate(sessions: readonly SessionListItem[]): DateGroup[] {
+  // Sort a copy: the caller's array must not be reordered
+  const sorted = [...sessions].sort(byMostRecentlyUpdated);
   const groups = new Map<string, SessionListItem[]>();
 
-  sessions.forEach((session) => {
-    const date = startOfDay(session.updatedAt);
-    let label: string;
+  for (const session of sorted) {
+    const label = getDateLabel(session.updatedAt);
+    groups.set(label, [...(groups.get(label) ?? []), session]);
+  }
 
-    if (isToday(date)) {
-      label = 'Today';
-    } else if (isYesterday(date)) {
-      label = 'Yesterday';
-    } else {
-      label = format(date, 'MMM d');
-    }
-
-    if (!groups.has(label)) {
-      groups.set(label, []);
-    }
-    groups.get(label)!.push(session);
-  });
-
-  return Array.from(groups.entries())
-    .map(([label, sessions]) => ({
-      label,
-      date: sessions[0].updatedAt,
-      sessions: sessions.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime()),
-    }))
-    .sort((a, b) => b.date.getTime() - a.date.getTime());
+  // Sessions arrive newest first, so groups are already in newest-first order
+  return Array.from(groups, ([label, items]) => ({
+    label,
+    date: items[0].updatedAt,
+    sessions: items,
+  }));
 }
 
 function formatTime(date: Date): string {
@@ -133,16 +132,11 @@ interface SessionCardProps {
 }
 
 function SessionCard({ session, selected, onClick, onKill, onArchive }: SessionCardProps) {
-  const [showActions, setShowActions] = useState(false);
-
   return (
-    <motion.button
+    <motion.div
       variants={variants.fadeInUp}
-      onClick={onClick}
-      onMouseEnter={() => setShowActions(true)}
-      onMouseLeave={() => setShowActions(false)}
       className={cn(
-        'w-full rounded-lg p-3 text-left',
+        'flex w-full items-start rounded-lg',
         'transition-all duration-150',
         'hover:bg-surface-1/50 hover:shadow-thin active:scale-[0.99]',
         'group relative',
@@ -150,7 +144,12 @@ function SessionCard({ session, selected, onClick, onKill, onArchive }: SessionC
       )}
       {...interactive.subtle}
     >
-      <div className="flex items-start gap-3">
+      {/* Select target. The actions are siblings: a <button> cannot contain other buttons. */}
+      <button
+        type="button"
+        onClick={onClick}
+        className="flex min-w-0 flex-1 items-start gap-3 rounded-lg p-3 text-left"
+      >
         {/* Status indicator */}
         <div className="pt-1">
           <StatusDot status={session.status} />
@@ -183,43 +182,45 @@ function SessionCard({ session, selected, onClick, onKill, onArchive }: SessionC
             </div>
           )}
         </div>
+      </button>
 
-        {/* Actions on hover */}
-        <AnimatePresence>
-          {showActions && (onKill || onArchive) && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.9 }}
-              transition={{ duration: 0.1 }}
-              className="flex items-center gap-1"
-              onClick={(e) => e.stopPropagation()}
-            >
-              {onArchive && (
-                <button
-                  onClick={onArchive}
-                  className="rounded-md p-2 text-white/40 hover:bg-white/10 hover:text-white/70"
-                  title="Archive session"
-                  aria-label={`Archive session ${session.name}`}
-                >
-                  <Archive className="h-3.5 w-3.5" aria-hidden="true" />
-                </button>
-              )}
-              {onKill && (
-                <button
-                  onClick={onKill}
-                  className="rounded-md p-2 text-white/40 hover:bg-red-500/20 hover:text-red-400"
-                  title="Kill session"
-                  aria-label={`Kill session ${session.name}`}
-                >
-                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                </button>
-              )}
-            </motion.div>
+      {/* Actions: always in the DOM so keyboard and touch users can reach them,
+          revealed on hover or when focus is inside the card */}
+      {(onKill || onArchive) && (
+        <div
+          className={cn(
+            'flex items-center gap-1 pr-3 pt-3',
+            'opacity-0 transition-opacity duration-100',
+            'group-focus-within:opacity-100 group-hover:opacity-100',
+            // No hover on touch screens: keep the actions visible instead of tappable-but-invisible
+            '[@media(hover:none)]:opacity-100'
           )}
-        </AnimatePresence>
-      </div>
-    </motion.button>
+        >
+          {onArchive && (
+            <button
+              type="button"
+              onClick={onArchive}
+              className="rounded-md p-2 text-white/40 hover:bg-white/10 hover:text-white/70"
+              title="Archive session"
+              aria-label={`Archive session ${session.name}`}
+            >
+              <Archive className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          )}
+          {onKill && (
+            <button
+              type="button"
+              onClick={onKill}
+              className="rounded-md p-2 text-white/40 hover:bg-red-500/20 hover:text-red-400"
+              title="Kill session"
+              aria-label={`Kill session ${session.name}`}
+            >
+              <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          )}
+        </div>
+      )}
+    </motion.div>
   );
 }
 

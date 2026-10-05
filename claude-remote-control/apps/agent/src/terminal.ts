@@ -1,6 +1,4 @@
 import * as pty from '@homebridge/node-pty-prebuilt-multiarch';
-import { exec, execSync } from 'child_process';
-import { promisify } from 'util';
 import {
   generateInitScript,
   writeInitScript,
@@ -8,14 +6,23 @@ import {
   detectUserShell,
 } from './lib/init-script.js';
 import * as path from 'path';
+import { logger } from './logger.js';
+import { capturePane, enableMouse, hasSessionSync } from './lib/tmux.js';
+import { clampHistoryLines, DEFAULT_HISTORY_LINES, isValidSessionName } from './lib/validation.js';
 
-const execAsync = promisify(exec);
+const READY_DELAY_MS = 150;
+const INIT_SCRIPT_CLEANUP_DELAY_MS = 5000;
+const ENABLE_MOUSE_DELAY_MS = 100;
+
+interface Disposable {
+  dispose(): void;
+}
 
 export interface Terminal {
   write(data: string): void;
   resize(cols: number, rows: number): void;
-  onData(callback: (data: string) => void): void;
-  onExit(callback: (info: { exitCode: number }) => void): void;
+  onData(callback: (data: string) => void): Disposable;
+  onExit(callback: (info: { exitCode: number }) => void): Disposable;
   kill(): void;
   detach(): void;
   captureHistory(lines?: number): Promise<string>;
@@ -33,6 +40,11 @@ export function createTerminal(
   sessionName: string,
   options: CreateTerminalOptions | Record<string, string> = {}
 ): Terminal {
+  // The name is used as a tmux target and in a temp file name
+  if (!isValidSessionName(sessionName)) {
+    throw new Error('Invalid session name');
+  }
+
   // Support both old signature (customEnvVars object) and new options object
   const customEnvVars =
     'customEnvVars' in options
@@ -40,19 +52,13 @@ export function createTerminal(
       : (options as Record<string, string>);
 
   // Check if session already exists before spawning
-  let existingSession = false;
-  try {
-    execSync(`tmux has-session -t "${sessionName}" 2>/dev/null`);
-    existingSession = true;
-    console.log(`[Terminal] Session '${sessionName}' exists, will attach`);
-  } catch {
-    existingSession = false;
-    console.log(`[Terminal] Session '${sessionName}' does not exist, will create`);
-  }
+  const existingSession = hasSessionSync(sessionName);
+  logger.terminal.info({ session: sessionName, existingSession }, 'Preparing terminal');
 
   if (Object.keys(customEnvVars).length > 0) {
-    console.log(
-      `[Terminal] Custom env vars for injection: ${Object.keys(customEnvVars).join(', ')}`
+    logger.terminal.info(
+      { session: sessionName, vars: Object.keys(customEnvVars) },
+      'Custom env vars for injection'
     );
   }
 
@@ -66,7 +72,7 @@ export function createTerminal(
   const isTestEnv = !!(process.env.VITEST || process.env.CI || process.env.JEST_WORKER_ID);
 
   if (existingSession) {
-    tmuxArgs = ['attach-session', '-t', sessionName];
+    tmuxArgs = ['attach-session', '-t', `=${sessionName}`];
   } else {
     // Extract project name from cwd (last directory component)
     const projectName = path.basename(cwd) || 'unknown';
@@ -86,15 +92,14 @@ export function createTerminal(
       targetShell: userShell, // User's preferred shell for interactive session
     });
     initScriptPath = writeInitScript(sessionName, scriptContent);
-    console.log(
-      `[Terminal] Init script written to: ${initScriptPath} (target shell: ${userShell})`
-    );
 
     // Spawn tmux with bash running the init script
     // The script sets up env vars, tmux config, then runs `exec ${userShell} -i`
+    // -A attaches instead of failing when two clients create the same session at once
     // Use -e to pass environment variable for animation skipping in tests
     tmuxArgs = [
       'new-session',
+      '-A',
       '-s',
       sessionName,
       '-c',
@@ -103,8 +108,6 @@ export function createTerminal(
       `bash --init-file ${initScriptPath}`,
     ];
   }
-
-  console.log(`[Terminal] Spawning: tmux ${tmuxArgs.join(' ')}`);
 
   const shell = pty.spawn('tmux', tmuxArgs, {
     name: 'xterm-256color',
@@ -128,26 +131,8 @@ export function createTerminal(
     } as { [key: string]: string },
   });
 
-  // Debug: log any immediate output or errors
-  let initialOutput = '';
-  const debugHandler = (data: string) => {
-    initialOutput += data;
-    if (initialOutput.length < 500) {
-      console.log(`[Terminal] Initial output: ${data.substring(0, 100)}`);
-    }
-  };
-  shell.onData(debugHandler);
-
-  // Remove debug handler after 2 seconds to prevent memory leak
-  setTimeout(() => {
-    (shell as any).removeListener('data', debugHandler);
-  }, 2000);
-
-  // Debug: log when shell exits
   shell.onExit(({ exitCode, signal }) => {
-    console.log(
-      `[Terminal] Shell exited: code=${exitCode}, signal=${signal}, session='${sessionName}'`
-    );
+    logger.terminal.info({ session: sessionName, exitCode, signal }, 'Shell exited');
   });
 
   // Track terminal readiness state for onReady callback
@@ -156,9 +141,6 @@ export function createTerminal(
   const readyCallbacks: (() => void)[] = [];
 
   const fireReadyCallbacks = () => {
-    console.log(
-      `[Terminal] fireReadyCallbacks: firing ${readyCallbacks.length} callbacks for '${sessionName}'`
-    );
     isReady = true;
     readyCallbacks.forEach((cb) => cb());
     readyCallbacks.length = 0; // Clear the array
@@ -168,24 +150,16 @@ export function createTerminal(
   if (!existingSession) {
     // For new sessions, the init script handles env vars and tmux config
     // Fire ready callbacks once shell is likely initialized
-    setTimeout(() => {
-      console.log(`[Terminal] New session '${sessionName}' ready (init script executed)`);
-      fireReadyCallbacks();
-    }, 150);
+    setTimeout(fireReadyCallbacks, READY_DELAY_MS);
 
     // Cleanup init script after shell has started (give it time to read the file)
     if (initScriptPath) {
-      setTimeout(() => {
-        cleanupInitScript(sessionName);
-        console.log(`[Terminal] Init script cleaned up for '${sessionName}'`);
-      }, 5000);
+      setTimeout(() => cleanupInitScript(sessionName), INIT_SCRIPT_CLEANUP_DELAY_MS);
     }
   } else {
     // For existing sessions, just ensure mouse is enabled
     // isReady is already true for existing sessions (set above)
-    setTimeout(() => {
-      exec(`tmux set-option -t "${sessionName}" mouse on`);
-    }, 100);
+    setTimeout(() => enableMouse(sessionName), ENABLE_MOUSE_DELAY_MS);
   }
 
   return {
@@ -194,33 +168,22 @@ export function createTerminal(
     onData: (callback) => shell.onData(callback),
     onExit: (callback) => shell.onExit(callback),
     kill: () => shell.kill(),
-    detach: () => {
-      // Send tmux detach command (Ctrl+B, d)
-      shell.write('\x02d');
-    },
+    // Ending the tmux client detaches it and leaves the session running.
+    // (Sending the detach key sequence would depend on the user's tmux prefix.)
+    detach: () => shell.kill(),
     isExistingSession: () => existingSession,
     onReady: (callback: () => void) => {
       if (isReady) {
-        console.log(
-          `[Terminal] onReady: already ready, calling callback immediately for '${sessionName}'`
-        );
         callback();
       } else {
-        console.log(`[Terminal] onReady: not ready yet, queuing callback for '${sessionName}'`);
         readyCallbacks.push(callback);
       }
     },
-    captureHistory: async (lines = 10000): Promise<string> => {
+    captureHistory: async (lines = DEFAULT_HISTORY_LINES): Promise<string> => {
       try {
-        // Capture scrollback buffer from tmux
-        // -p = print to stdout
-        // -S -N = start from N lines back (negative = from start of history)
-        // -J = preserve trailing spaces for proper formatting
-        const { stdout } = await execAsync(
-          `tmux capture-pane -t "${sessionName}" -p -S -${lines} -J 2>/dev/null`
-        );
-        return stdout;
+        return await capturePane(sessionName, clampHistoryLines(lines));
       } catch {
+        // The session may have ended between attach and capture
         return '';
       }
     },

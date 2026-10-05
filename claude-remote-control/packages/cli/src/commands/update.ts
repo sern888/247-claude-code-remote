@@ -3,148 +3,201 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { createServiceManager } from '../service/index.js';
+import { createServiceManager, type ServiceManager } from '../service/index.js';
 import { isAgentRunning, stopAgent } from '../lib/process.js';
 
 const execAsync = promisify(exec);
 
 const PACKAGE_NAME = '247-cli';
+const NPM_INSTALL_TIMEOUT_MS = 120_000;
+
+/** How the agent was running when the update started. */
+type AgentMode = 'service' | 'daemon' | 'none';
+
+async function getCurrentVersion(): Promise<string> {
+  const pkg = await import('../../package.json', {
+    with: { type: 'json' },
+  });
+  return pkg.default.version;
+}
+
+/**
+ * Ask npm for the latest published version, or null when it cannot be reached.
+ */
+async function getLatestVersion(): Promise<string | null> {
+  try {
+    const { stdout } = await execAsync(`npm view ${PACKAGE_NAME} version 2>/dev/null`);
+    return stdout.trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Find out whether an agent is running and who manages it. A system service
+ * takes precedence; otherwise the PID file tells us about a daemon.
+ */
+async function detectRunningAgent(serviceManager: ServiceManager): Promise<AgentMode> {
+  const serviceStatus = await serviceManager.status();
+  if (serviceStatus.installed && serviceStatus.running) {
+    return 'service';
+  }
+  return isAgentRunning().running ? 'daemon' : 'none';
+}
+
+/**
+ * Stop the running agent. Reports "stopped" only when the stop actually succeeded.
+ */
+async function stopRunningAgent(mode: AgentMode, serviceManager: ServiceManager): Promise<boolean> {
+  const stopSpinner = ora('Stopping agent...').start();
+  const result = mode === 'service' ? await serviceManager.stop() : await stopAgent();
+
+  if (!result.success) {
+    stopSpinner.fail(`Failed to stop agent: ${result.error ?? 'unknown error'}`);
+    console.log(chalk.dim('Update aborted, nothing was installed. Stop the agent and try again.'));
+    return false;
+  }
+
+  stopSpinner.succeed('Agent stopped');
+  return true;
+}
+
+/**
+ * Install the requested version globally and verify npm really installed it.
+ */
+async function installVersion(version: string): Promise<boolean> {
+  const updateSpinner = ora(`Updating to ${version} via npm...`).start();
+  try {
+    const { stdout, stderr } = await execAsync(`npm install -g ${PACKAGE_NAME}@${version} 2>&1`, {
+      timeout: NPM_INSTALL_TIMEOUT_MS,
+    });
+
+    // Verify the installed version matches what we requested
+    const { stdout: installedStr } = await execAsync(
+      `npm ls -g ${PACKAGE_NAME} --depth=0 --json 2>/dev/null`
+    );
+    const installedVersion = JSON.parse(installedStr)?.dependencies?.[PACKAGE_NAME]?.version;
+
+    if (installedVersion !== version) {
+      updateSpinner.fail(`npm installed ${installedVersion || 'unknown'} instead of ${version}`);
+      if (stderr || stdout) {
+        console.log(chalk.dim('\nnpm output:'));
+        console.log(chalk.dim(stderr || stdout));
+      }
+      console.log(chalk.dim(`\nTry: npm install -g ${PACKAGE_NAME}@${version} --force\n`));
+      return false;
+    }
+
+    updateSpinner.succeed(`Updated to ${version}`);
+    return true;
+  } catch (err) {
+    const execErr = err as Error & { stderr?: string };
+    updateSpinner.fail(`Failed to update: ${execErr.message}`);
+    if (execErr.stderr) {
+      console.log(chalk.dim('\nnpm error output:'));
+      console.log(chalk.dim(execErr.stderr));
+    }
+    console.log(chalk.dim(`\nTry running manually: npm install -g ${PACKAGE_NAME}@${version}\n`));
+    return false;
+  }
+}
+
+/**
+ * Bring the agent back after the update. A service is restarted here; a daemon
+ * has to be started by the newly installed CLI, so the user is told to do that.
+ */
+async function restartStoppedAgent(
+  mode: AgentMode,
+  serviceManager: ServiceManager
+): Promise<boolean> {
+  if (mode === 'daemon') {
+    console.log(chalk.yellow('The agent was stopped for the update and is not running.'));
+    console.log(chalk.dim('Start it with the new version: 247 start'));
+    return true;
+  }
+
+  const startSpinner = ora('Restarting agent...').start();
+  const result = await serviceManager.start();
+
+  if (!result.success) {
+    startSpinner.fail(`Failed to restart agent: ${result.error ?? 'unknown error'}`);
+    console.log(chalk.dim('The update is installed. Start the agent with: 247 service start'));
+    return false;
+  }
+
+  startSpinner.succeed('Agent restarted');
+  return true;
+}
+
+/**
+ * Stop the agent if needed, install the version, and bring the agent back.
+ */
+async function installWithAgentRestart(version: string): Promise<boolean> {
+  const serviceManager = createServiceManager();
+  const mode = await detectRunningAgent(serviceManager);
+  const agentWasRunning = mode !== 'none';
+
+  if (agentWasRunning && !(await stopRunningAgent(mode, serviceManager))) {
+    return false;
+  }
+  if (!(await installVersion(version))) {
+    return false;
+  }
+  if (agentWasRunning && !(await restartStoppedAgent(mode, serviceManager))) {
+    return false;
+  }
+
+  console.log();
+  console.log(chalk.green('✓ Update complete!'));
+  console.log();
+  return true;
+}
+
+/**
+ * Run the update. Returns false when any step failed.
+ */
+async function runUpdate(checkOnly: boolean): Promise<boolean> {
+  const checkSpinner = ora('Checking for updates...').start();
+
+  const currentVersion = await getCurrentVersion();
+  const latestVersion = await getLatestVersion();
+
+  if (latestVersion === null) {
+    checkSpinner.fail('Failed to check for updates. Are you connected to the internet?');
+    return false;
+  }
+
+  if (currentVersion === latestVersion) {
+    checkSpinner.succeed(`Already on the latest version (${currentVersion})`);
+    return true;
+  }
+
+  checkSpinner.succeed(`Update available: ${currentVersion} → ${latestVersion}`);
+
+  if (checkOnly) {
+    console.log(chalk.dim('\nRun "247 update" to install the update.\n'));
+    return true;
+  }
+
+  console.log();
+  return installWithAgentRestart(latestVersion);
+}
 
 export const updateCommand = new Command('update')
   .description('Update 247 to the latest version')
   .option('--check', 'Only check for updates without installing')
-  .action(async (options) => {
+  .action(async (options: { check?: boolean }) => {
     console.log(chalk.bold('\n247 Update\n'));
 
-    const checkSpinner = ora('Checking for updates...').start();
-
+    let succeeded: boolean;
     try {
-      // Get current version
-      const pkg = await import('../../package.json', {
-        with: { type: 'json' },
-      });
-      const currentVersion = pkg.default.version;
-
-      // Check npm for latest version
-      let latestVersion: string;
-      try {
-        const { stdout } = await execAsync(`npm view ${PACKAGE_NAME} version 2>/dev/null`);
-        latestVersion = stdout.trim();
-      } catch {
-        checkSpinner.fail('Failed to check for updates. Are you connected to the internet?');
-        process.exit(1);
-      }
-
-      if (currentVersion === latestVersion) {
-        checkSpinner.succeed(`Already on the latest version (${currentVersion})`);
-        return;
-      }
-
-      checkSpinner.succeed(`Update available: ${currentVersion} → ${latestVersion}`);
-
-      if (options.check) {
-        console.log(chalk.dim('\nRun "247 update" to install the update.\n'));
-        return;
-      }
-
-      console.log();
-
-      // Check if service is running
-      const serviceManager = createServiceManager();
-      let serviceWasRunning = false;
-
-      try {
-        const serviceStatus = await serviceManager.status();
-        serviceWasRunning = serviceStatus.running;
-      } catch {
-        // Service not installed, check daemon
-        const daemonStatus = isAgentRunning();
-        serviceWasRunning = daemonStatus.running;
-      }
-
-      // Stop agent if running
-      if (serviceWasRunning) {
-        const stopSpinner = ora('Stopping agent...').start();
-        try {
-          const serviceStatus = await serviceManager.status();
-          if (serviceStatus.installed && serviceStatus.running) {
-            await serviceManager.stop();
-          } else {
-            await stopAgent();
-          }
-          stopSpinner.succeed('Agent stopped');
-        } catch (err) {
-          stopSpinner.warn(`Could not stop agent: ${(err as Error).message}`);
-        }
-      }
-
-      // Update via npm
-      const updateSpinner = ora(`Updating to ${latestVersion} via npm...`).start();
-      try {
-        const { stdout, stderr } = await execAsync(
-          `npm install -g ${PACKAGE_NAME}@${latestVersion} 2>&1`,
-          { timeout: 120_000 }
-        );
-
-        // Verify the installed version matches what we requested
-        const { stdout: installedStr } = await execAsync(
-          `npm ls -g ${PACKAGE_NAME} --depth=0 --json 2>/dev/null`
-        );
-        const installed = JSON.parse(installedStr);
-        const installedVersion = installed?.dependencies?.[PACKAGE_NAME]?.version;
-
-        if (installedVersion !== latestVersion) {
-          updateSpinner.fail(
-            `npm installed ${installedVersion || 'unknown'} instead of ${latestVersion}`
-          );
-          if (stderr || stdout) {
-            console.log(chalk.dim('\nnpm output:'));
-            console.log(chalk.dim(stderr || stdout));
-          }
-          console.log(
-            chalk.dim(`\nTry: npm install -g ${PACKAGE_NAME}@${latestVersion} --force\n`)
-          );
-          process.exit(1);
-        }
-
-        updateSpinner.succeed(`Updated to ${latestVersion}`);
-      } catch (err) {
-        const execErr = err as Error & { stderr?: string; stdout?: string };
-        updateSpinner.fail(`Failed to update: ${execErr.message}`);
-        if (execErr.stderr) {
-          console.log(chalk.dim('\nnpm error output:'));
-          console.log(chalk.dim(execErr.stderr));
-        }
-        console.log(
-          chalk.dim(`\nTry running manually: npm install -g ${PACKAGE_NAME}@${latestVersion}\n`)
-        );
-        process.exit(1);
-      }
-
-      // Restart agent if it was running
-      if (serviceWasRunning) {
-        const startSpinner = ora('Restarting agent...').start();
-        try {
-          const serviceStatus = await serviceManager.status();
-          if (serviceStatus.installed) {
-            await serviceManager.start();
-          } else {
-            // Will use the daemon mode - but after update the binary changed
-            // so we should tell user to restart manually
-            startSpinner.info('Please restart the agent manually: 247 start');
-          }
-          startSpinner.succeed('Agent restarted');
-        } catch (err) {
-          startSpinner.warn(`Could not restart agent: ${(err as Error).message}`);
-          console.log(chalk.dim('Run "247 start" to start the agent manually.'));
-        }
-      }
-
-      console.log();
-      console.log(chalk.green('✓ Update complete!'));
-      console.log();
+      succeeded = await runUpdate(Boolean(options.check));
     } catch (err) {
-      checkSpinner.fail(`Error: ${(err as Error).message}`);
+      console.error(chalk.red(`Error: ${(err as Error).message}`));
+      succeeded = false;
+    }
+
+    if (!succeeded) {
       process.exit(1);
     }
   });

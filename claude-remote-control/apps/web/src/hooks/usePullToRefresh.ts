@@ -75,8 +75,9 @@ export function usePullToRefresh({
       // Apply resistance for natural feel
       const resistedDelta = deltaY / resistance;
 
-      // Prevent default scroll behavior when pulling
-      e.preventDefault();
+      // No preventDefault() here: React registers touchmove as a passive listener, so the
+      // call is ignored and only logs a warning. The browser's own pull-to-refresh is
+      // disabled with CSS instead (overscroll-behavior on the page and the scroll container).
 
       setPullDistance(resistedDelta);
       setIsPulling(true);

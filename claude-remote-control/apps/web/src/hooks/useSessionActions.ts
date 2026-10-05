@@ -2,7 +2,7 @@
 
 import { useCallback } from 'react';
 import { toast } from 'sonner';
-import { buildApiUrl } from '@/lib/utils';
+import { buildApiUrl, buildSessionAcknowledgeUrl } from '@/lib/utils';
 import type { AgentConnection } from './useAgentConnections';
 
 export interface UseSessionActionsReturn {
@@ -92,10 +92,9 @@ export function useSessionActions(agentConnections: AgentConnection[]): UseSessi
       }
 
       try {
-        const response = await fetch(
-          buildApiUrl(machine.url, `/api/sessions/${encodeURIComponent(sessionName)}/acknowledge`),
-          { method: 'POST' }
-        );
+        const response = await fetch(buildSessionAcknowledgeUrl(machine.url, sessionName), {
+          method: 'POST',
+        });
         return response.ok;
       } catch (err) {
         console.error('Failed to acknowledge session:', err);

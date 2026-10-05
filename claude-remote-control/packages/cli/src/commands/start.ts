@@ -1,21 +1,32 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
-import { spawn } from 'child_process';
 import { join } from 'path';
-import { existsSync } from 'fs';
 import { loadConfig, configExists, getProfilePath } from '../lib/config.js';
 import { getAgentPaths } from '../lib/paths.js';
-import { startAgentDaemon, isAgentRunning } from '../lib/process.js';
+import {
+  startAgentDaemon,
+  isAgentRunning,
+  getAgentLaunchSpec,
+  buildAgentEnv,
+} from '../lib/process.js';
+import { runInForeground } from '../lib/foreground.js';
 import { isAbiVersionChanged, ensureNativeModules } from '../lib/prerequisites.js';
+import { requireValidProfileName } from '../lib/cli-input.js';
+
+interface StartOptions {
+  foreground?: boolean;
+  profile?: string;
+}
 
 export const startCommand = new Command('start')
   .description('Start the 247 agent')
   .option('-f, --foreground', 'Run in foreground (not as daemon)')
   .option('-P, --profile <name>', 'Use a specific profile')
-  .action(async (options, cmd) => {
+  .action(async (options: StartOptions, cmd: Command) => {
     // Get profile from command option or parent (global) option
-    const profileName = options.profile || cmd.parent?.opts().profile;
+    const profileName: string | undefined = options.profile || cmd.parent?.opts().profile;
+    requireValidProfileName(profileName);
     const profileLabel = profileName ? ` (profile: ${profileName})` : '';
 
     // Check configuration
@@ -69,50 +80,21 @@ export const startCommand = new Command('start')
       );
 
       const paths = getAgentPaths();
-      const configPath = getProfilePath(profileName);
-      const entryPoint = paths.isDev
-        ? join(paths.agentRoot, 'src', 'index.ts')
-        : join(paths.agentRoot, 'dist', 'index.js');
+      const launch = getAgentLaunchSpec(paths);
 
-      if (!existsSync(entryPoint) && !existsSync(entryPoint.replace('.ts', '.js'))) {
-        console.log(chalk.red(`Agent entry point not found: ${entryPoint}\n`));
+      if (!launch.entryPointExists) {
+        console.log(chalk.red(`Agent entry point not found: ${launch.entryPoint}\n`));
         process.exit(1);
       }
 
-      let command: string;
-      let args: string[];
-
-      if (paths.isDev) {
-        command = 'npx';
-        args = ['tsx', entryPoint];
-      } else {
-        command = paths.nodePath;
-        args = [entryPoint];
-      }
-
-      const child = spawn(command, args, {
+      // Signals are forwarded to the agent and its exit status becomes ours
+      runInForeground(launch.command, launch.args, {
         cwd: paths.agentRoot,
         stdio: 'inherit',
         env: {
-          ...process.env,
-          AGENT_247_CONFIG: configPath,
-          AGENT_247_DATA: paths.dataDir,
-          AGENT_247_PROFILE: profileName || '',
+          ...buildAgentEnv({ profileName, port: config.agent.port }),
+          AGENT_247_CONFIG: getProfilePath(profileName),
         },
-      });
-
-      child.on('error', (err) => {
-        console.error(chalk.red(`Failed to start: ${err.message}`));
-        process.exit(1);
-      });
-
-      child.on('exit', (code) => {
-        process.exit(code ?? 0);
-      });
-
-      // Handle Ctrl+C gracefully
-      process.on('SIGINT', () => {
-        child.kill('SIGTERM');
       });
     } else {
       // Run as daemon
@@ -120,17 +102,28 @@ export const startCommand = new Command('start')
 
       const result = await startAgentDaemon(profileName);
 
-      if (result.success) {
-        spinner.succeed(`Agent started${profileLabel} (PID: ${result.pid})`);
-
-        const paths = getAgentPaths();
-        console.log(chalk.dim(`  Logs: ${join(paths.logDir, 'agent.log')}`));
-        console.log();
-        console.log(`Agent running on ${chalk.cyan(`http://localhost:${config.agent.port}`)}`);
-        console.log();
-      } else {
+      if (!result.success) {
         spinner.fail(`Failed to start: ${result.error}`);
         process.exit(1);
       }
+
+      const logPath = join(getAgentPaths().logDir, 'agent.log');
+      const agentUrl = `http://localhost:${config.agent.port}`;
+
+      if (result.healthy) {
+        spinner.succeed(`Agent started${profileLabel} (PID: ${result.pid})`);
+        console.log(chalk.dim(`  Logs: ${logPath}`));
+        console.log();
+        console.log(`Agent running on ${chalk.cyan(agentUrl)}`);
+      } else {
+        // The process is alive but has not answered its health check: do not claim success
+        spinner.warn(
+          `Agent process started${profileLabel} (PID: ${result.pid}) but is not answering on ${agentUrl} yet`
+        );
+        console.log(chalk.dim(`  Logs: ${logPath}`));
+        console.log();
+        console.log(chalk.yellow('Check the logs, then run "247 status" to confirm it came up.'));
+      }
+      console.log();
     }
   });

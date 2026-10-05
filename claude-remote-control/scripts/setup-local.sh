@@ -19,14 +19,14 @@ check_dependency() {
     fi
 }
 
-check_dependency "node" "Install Node.js 20+ from https://nodejs.org"
+check_dependency "node" "Install Node.js 22+ from https://nodejs.org"
 check_dependency "pnpm" "Install pnpm with: npm install -g pnpm"
 check_dependency "tmux" "Install tmux with: brew install tmux (macOS) or apt install tmux (Linux)"
 
 # Check Node.js version
 NODE_VERSION=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
-if [ "$NODE_VERSION" -lt 20 ]; then
-    echo "Error: Node.js 20+ is required. Current version: $(node -v)"
+if [ "$NODE_VERSION" -lt 22 ]; then
+    echo "Error: Node.js 22+ is required. Current version: $(node -v)"
     exit 1
 fi
 
@@ -47,15 +47,26 @@ CONFIG_FILE="$HOME/.247/config.json"
 if [ ! -f "$CONFIG_FILE" ]; then
     echo "Creating default config..."
     mkdir -p "$(dirname "$CONFIG_FILE")"
-    cat > "$CONFIG_FILE" << 'EOF'
+    # The agent requires machine.id and machine.name; an empty whitelist
+    # allows every folder under basePath.
+    MACHINE_ID="$(node -e 'process.stdout.write(require("crypto").randomUUID())')"
+    MACHINE_NAME="$(hostname -s | tr -cd 'A-Za-z0-9._-')"
+    cat > "$CONFIG_FILE" << EOF
 {
-  "port": 4678,
+  "machine": {
+    "id": "$MACHINE_ID",
+    "name": "${MACHINE_NAME:-my-machine}"
+  },
+  "agent": {
+    "port": 4678
+  },
   "projects": {
     "basePath": "~/Dev",
-    "allowedProjects": ["*"]
+    "whitelist": []
   }
 }
 EOF
+    chmod 600 "$CONFIG_FILE"
     echo "Config created at: $CONFIG_FILE"
 fi
 

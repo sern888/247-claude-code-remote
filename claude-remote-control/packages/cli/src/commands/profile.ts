@@ -1,14 +1,75 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import {
+  type AgentConfig,
   listProfiles,
   loadConfig,
+  loadStoredConfig,
   saveConfig,
   deleteProfile,
   profileExists,
   createConfig,
+  copyConfigForNewProfile,
   getProfilePath,
 } from '../lib/config.js';
+import { exitWithError, requirePort, requireValidProfileName } from '../lib/cli-input.js';
+
+interface CreateOptions {
+  port: string;
+  machineName?: string;
+  copyFrom?: string;
+}
+
+interface SetOptions {
+  port?: string;
+  machineName?: string;
+  projectsPath?: string;
+}
+
+/**
+ * Build the config for `profile create`, either from defaults or from the
+ * stored (not env-overridden) config of another profile.
+ */
+function buildNewProfileConfig(name: string, options: CreateOptions): AgentConfig {
+  const port = requirePort(options.port, '--port');
+
+  if (!options.copyFrom) {
+    return createConfig({ machineName: options.machineName || `${name} agent`, port });
+  }
+
+  requireValidProfileName(options.copyFrom);
+  const sourceConfig = loadStoredConfig(
+    options.copyFrom === 'default' ? undefined : options.copyFrom
+  );
+  if (!sourceConfig) {
+    return exitWithError(`Source profile '${options.copyFrom}' does not exist.`);
+  }
+
+  return copyConfigForNewProfile(sourceConfig, { port, machineName: options.machineName });
+}
+
+/**
+ * Apply `profile set` options to a stored config without mutating it.
+ * Returns null when no option was given.
+ */
+function applyProfileUpdates(config: AgentConfig, options: SetOptions): AgentConfig | null {
+  if (!options.port && !options.machineName && !options.projectsPath) {
+    return null;
+  }
+
+  return {
+    ...config,
+    agent: options.port
+      ? { ...config.agent, port: requirePort(options.port, '--port') }
+      : config.agent,
+    machine: options.machineName
+      ? { ...config.machine, name: options.machineName }
+      : config.machine,
+    projects: options.projectsPath
+      ? { ...config.projects, basePath: options.projectsPath }
+      : config.projects,
+  };
+}
 
 export const profileCommand = new Command('profile')
   .description('Manage configuration profiles')
@@ -42,6 +103,7 @@ export const profileCommand = new Command('profile')
       .argument('[name]', 'Profile name', 'default')
       .description('Show profile configuration')
       .action((name: string) => {
+        requireValidProfileName(name);
         const profileName = name === 'default' ? undefined : name;
 
         if (!profileExists(profileName)) {
@@ -68,41 +130,24 @@ export const profileCommand = new Command('profile')
       .option('-n, --machine-name <name>', 'Machine display name')
       .option('--copy-from <profile>', 'Copy settings from existing profile')
       .description('Create a new profile')
-      .action((name: string, options: { port: string; machineName?: string; copyFrom?: string }) => {
+      .action((name: string, options: CreateOptions) => {
+        requireValidProfileName(name);
+
         if (name === 'default') {
-          console.error(chalk.red('Cannot create a profile named "default". Use `247 init` instead.'));
+          console.error(
+            chalk.red('Cannot create a profile named "default". Use `247 init` instead.')
+          );
           process.exit(1);
         }
 
         if (profileExists(name)) {
-          console.error(chalk.red(`Profile '${name}' already exists. Use 'profile show ${name}' to view it.`));
+          console.error(
+            chalk.red(`Profile '${name}' already exists. Use 'profile show ${name}' to view it.`)
+          );
           process.exit(1);
         }
 
-        let config;
-
-        if (options.copyFrom) {
-          const sourceProfile = options.copyFrom === 'default' ? undefined : options.copyFrom;
-          const sourceConfig = loadConfig(sourceProfile);
-
-          if (!sourceConfig) {
-            console.error(chalk.red(`Source profile '${options.copyFrom}' does not exist.`));
-            process.exit(1);
-          }
-
-          config = { ...sourceConfig };
-          config.agent.port = parseInt(options.port, 10);
-
-          if (options.machineName) {
-            config.machine.name = options.machineName;
-          }
-        } else {
-          const machineName = options.machineName || `${name} agent`;
-          config = createConfig({
-            machineName,
-            port: parseInt(options.port, 10),
-          });
-        }
+        const config = buildNewProfileConfig(name, options);
 
         saveConfig(config, name);
 
@@ -121,6 +166,8 @@ export const profileCommand = new Command('profile')
       .option('-f, --force', 'Skip confirmation')
       .description('Delete a profile')
       .action(async (name: string, options: { force?: boolean }) => {
+        requireValidProfileName(name);
+
         if (name === 'default') {
           console.error(chalk.red('Cannot delete the default profile.'));
           process.exit(1);
@@ -158,7 +205,8 @@ export const profileCommand = new Command('profile')
       .option('-n, --machine-name <name>', 'Machine display name')
       .option('--projects-path <path>', 'Projects base path')
       .description('Update profile settings')
-      .action((name: string, options: { port?: string; machineName?: string; projectsPath?: string }) => {
+      .action((name: string, options: SetOptions) => {
+        requireValidProfileName(name);
         const profileName = name === 'default' ? undefined : name;
 
         if (!profileExists(profileName)) {
@@ -166,35 +214,22 @@ export const profileCommand = new Command('profile')
           process.exit(1);
         }
 
-        const config = loadConfig(profileName);
-        if (!config) {
+        // Start from what is on disk: env overrides must not be saved permanently
+        const storedConfig = loadStoredConfig(profileName);
+        if (!storedConfig) {
           console.error(chalk.red(`Failed to load profile '${name}'.`));
           process.exit(1);
         }
 
-        let updated = false;
-
-        if (options.port) {
-          config.agent.port = parseInt(options.port, 10);
-          updated = true;
-        }
-
-        if (options.machineName) {
-          config.machine.name = options.machineName;
-          updated = true;
-        }
-
-        if (options.projectsPath) {
-          config.projects.basePath = options.projectsPath;
-          updated = true;
-        }
-
-        if (!updated) {
-          console.log(chalk.yellow('No changes specified. Use --port, --machine-name, or --projects-path.'));
+        const updatedConfig = applyProfileUpdates(storedConfig, options);
+        if (!updatedConfig) {
+          console.log(
+            chalk.yellow('No changes specified. Use --port, --machine-name, or --projects-path.')
+          );
           return;
         }
 
-        saveConfig(config, profileName);
+        saveConfig(updatedConfig, profileName);
         console.log(chalk.green(`\n✓ Profile '${name}' updated.`));
         console.log();
       })

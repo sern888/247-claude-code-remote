@@ -1,0 +1,29 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "claude-remote-control/apps/web/node_modules/next/dist/bin/next",
+        "dev",
+        "claude-remote-control/apps/web",
+        "--port",
+        "3001"
+      ],
+      "port": 3001
+    },
+    {
+      "name": "agent",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "claude-remote-control/apps/agent/node_modules/tsx/dist/cli.mjs",
+        "watch",
+        "--tsconfig",
+        "claude-remote-control/apps/agent/tsconfig.json",
+        "claude-remote-control/apps/agent/src/index.ts"
+      ],
+      "port": 4678
+    }
+  ]
+}

@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Plus, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useEscapeKey } from '@/components/ui/SlideOverPanel';
 
 import { useFolders, useClone } from './hooks';
 import { MachineSelector } from './MachineSelector';
@@ -61,18 +62,19 @@ export function NewSessionModal({
     }
   }, [selectedMachine, selectedProject, onStartSession, onOpenChange]);
 
+  // Escape closes the modal and is consumed here, so it does not also leave the session behind it
+  const closeModal = useCallback(() => onOpenChange(false), [onOpenChange]);
+  useEscapeKey(open, closeModal);
+
   // Keyboard shortcuts
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onOpenChange(false);
-      }
       // Only handle Enter on existing tab (clone tab has its own Enter handler)
       if (e.key === 'Enter' && activeTab === 'existing' && selectedMachine && selectedProject) {
         handleStartSession();
       }
     },
-    [onOpenChange, activeTab, selectedMachine, selectedProject, handleStartSession]
+    [activeTab, selectedMachine, selectedProject, handleStartSession]
   );
 
   useEffect(() => {

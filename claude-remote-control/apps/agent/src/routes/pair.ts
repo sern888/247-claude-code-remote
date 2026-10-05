@@ -4,8 +4,44 @@
  */
 
 import { Router } from 'express';
-import { createHmac } from 'crypto';
+import { createHmac, randomBytes, randomInt, timingSafeEqual } from 'crypto';
 import { config } from '../config.js';
+
+const PAIRING_TTL_MS = 10 * 60 * 1000;
+const CODE_MIN = 100000;
+const CODE_MAX_EXCLUSIVE = 1000000;
+const CODE_PATTERN = /^\d{6}$/;
+const MAX_CODE_LOOKUPS_PER_MINUTE = 30;
+const LOOKUP_WINDOW_MS = 60 * 1000;
+
+// Signing key for pairing tokens. It lives only in this process: tokens expire
+// after ten minutes and are verified by this same agent, and the machine id
+// (the previous key) is shown on the pairing page, which made tokens forgeable.
+const TOKEN_SECRET = randomBytes(32).toString('hex');
+
+// Timestamps of recent code lookups, to slow down guessing of 6-digit codes
+let recentCodeLookups: number[] = [];
+
+function isCodeLookupAllowed(now: number): boolean {
+  recentCodeLookups = recentCodeLookups.filter((time) => now - time < LOOKUP_WINDOW_MS);
+  if (recentCodeLookups.length >= MAX_CODE_LOOKUPS_PER_MINUTE) {
+    return false;
+  }
+  recentCodeLookups = [...recentCodeLookups, now];
+  return true;
+}
+
+const HTML_ESCAPES: Record<string, string> = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+};
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => HTML_ESCAPES[char]);
+}
 
 // In-memory store for pairing codes (6-digit codes with 10-minute expiry)
 interface PairingCode {
@@ -31,7 +67,7 @@ setInterval(() => {
 
 // Generate a 6-digit code
 function generateCode(): string {
-  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  const code = randomInt(CODE_MIN, CODE_MAX_EXCLUSIVE).toString();
   // Ensure uniqueness
   if (pairingCodes.has(code)) {
     return generateCode();
@@ -59,8 +95,9 @@ export function verifyToken(
       return { valid: false, error: 'Invalid token format' };
     }
 
-    const expectedSignature = createHmac('sha256', secret).update(payloadStr).digest('base64url');
-    if (signature !== expectedSignature) {
+    const expected = createHmac('sha256', secret).update(payloadStr).digest();
+    const received = Buffer.from(signature, 'base64url');
+    if (received.length !== expected.length || !timingSafeEqual(received, expected)) {
       return { valid: false, error: 'Invalid signature' };
     }
 
@@ -104,56 +141,79 @@ function generateQRCodeSVG(data: string): string {
   return `<img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encoded}" alt="QR Code" width="200" height="200" style="image-rendering: pixelated;" />`;
 }
 
+interface PairingInfo {
+  machineId: string;
+  machineName: string;
+  agentUrl: string;
+  token: string;
+  pairingLink: string;
+  codeData: PairingCode;
+}
+
+/**
+ * Reuse this machine's pairing code while it is still valid, otherwise
+ * create a new one.
+ */
+function getOrCreatePairingCode(
+  machineId: string,
+  machineName: string,
+  agentUrl: string
+): PairingCode {
+  const now = Date.now();
+  for (const data of pairingCodes.values()) {
+    if (data.machineId === machineId && data.expiresAt > now) {
+      return data;
+    }
+  }
+
+  const code = generateCode();
+  const created: PairingCode = {
+    code,
+    machineId,
+    machineName,
+    agentUrl,
+    createdAt: now,
+    expiresAt: now + PAIRING_TTL_MS,
+  };
+  pairingCodes.set(code, created);
+  return created;
+}
+
+/**
+ * Everything the pairing page and the JSON endpoint hand out: a fresh signed
+ * token (10 minute expiry), the pairing link and the 6-digit fallback code.
+ */
+function issuePairing(): PairingInfo {
+  const machineId = config.machine.id;
+  const machineName = config.machine.name;
+  const agentUrl = getAgentUrl();
+
+  const token = createToken(
+    { mid: machineId, mn: machineName, url: agentUrl },
+    TOKEN_SECRET,
+    PAIRING_TTL_MS
+  );
+
+  return {
+    machineId,
+    machineName,
+    agentUrl,
+    token,
+    pairingLink: `${getDashboardUrl()}/connect?token=${encodeURIComponent(token)}`,
+    codeData: getOrCreatePairingCode(machineId, machineName, agentUrl),
+  };
+}
+
 export function createPairRoutes(): Router {
   const router = Router();
 
   // GET /pair - HTML page with pairing info
   router.get('/', (_req, res) => {
-    const machineId = config.machine.id;
-    const machineName = config.machine.name;
-    const agentUrl = getAgentUrl();
-    const dashboardUrl = getDashboardUrl();
-
-    // Create token (10 minute expiry)
-    const token = createToken(
-      {
-        mid: machineId,
-        mn: machineName,
-        url: agentUrl,
-      },
-      machineId,
-      10 * 60 * 1000
-    );
-
-    // Generate or reuse existing code for this machine
-    let existingCode: string | undefined;
-    for (const [code, data] of pairingCodes.entries()) {
-      if (data.machineId === machineId && data.expiresAt > Date.now()) {
-        existingCode = code;
-        break;
-      }
-    }
-
-    const code =
-      existingCode ||
-      (() => {
-        const newCode = generateCode();
-        pairingCodes.set(newCode, {
-          code: newCode,
-          machineId,
-          machineName,
-          agentUrl,
-          createdAt: Date.now(),
-          expiresAt: Date.now() + 10 * 60 * 1000,
-        });
-        return newCode;
-      })();
-
-    const pairingLink = `${dashboardUrl}/connect?token=${encodeURIComponent(token)}`;
+    const { machineId, machineName, agentUrl, pairingLink, codeData } = issuePairing();
+    const { code } = codeData;
     const qrCodeSvg = generateQRCodeSVG(pairingLink);
 
     // Calculate time remaining
-    const codeData = pairingCodes.get(code)!;
     const secondsRemaining = Math.floor((codeData.expiresAt - Date.now()) / 1000);
 
     const html = `<!DOCTYPE html>
@@ -161,7 +221,7 @@ export function createPairRoutes(): Router {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Pair Agent - ${machineName}</title>
+  <title>Pair Agent - ${escapeHtml(machineName)}</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -290,14 +350,14 @@ export function createPairRoutes(): Router {
   <div class="container">
     <div class="machine-icon">💻</div>
     <h1>Pair Your Agent</h1>
-    <p class="machine-name">${machineName}</p>
+    <p class="machine-name">${escapeHtml(machineName)}</p>
 
     <div class="qr-section">
       ${qrCodeSvg}
     </div>
 
     <div class="link-section">
-      <a href="${pairingLink}" class="pair-button" target="_blank">Open Dashboard to Pair</a>
+      <a href="${escapeHtml(pairingLink)}" class="pair-button" target="_blank" rel="noopener noreferrer">Open Dashboard to Pair</a>
     </div>
 
     <div class="divider"><span>or enter this code</span></div>
@@ -311,8 +371,8 @@ export function createPairRoutes(): Router {
     <p class="refresh-note">Page will auto-refresh when code expires</p>
 
     <p class="agent-info">
-      Agent URL: ${agentUrl}<br>
-      Machine ID: ${machineId}
+      Agent URL: ${escapeHtml(agentUrl)}<br>
+      Machine ID: ${escapeHtml(machineId)}
     </p>
   </div>
 
@@ -340,55 +400,15 @@ export function createPairRoutes(): Router {
 
   // GET /pair/info - JSON API for pairing info
   router.get('/info', (_req, res) => {
-    const machineId = config.machine.id;
-    const machineName = config.machine.name;
-    const agentUrl = getAgentUrl();
-    const dashboardUrl = getDashboardUrl();
-
-    // Create token (10 minute expiry)
-    const token = createToken(
-      {
-        mid: machineId,
-        mn: machineName,
-        url: agentUrl,
-      },
-      machineId,
-      10 * 60 * 1000
-    );
-
-    // Generate or reuse existing code
-    let existingCode: string | undefined;
-    for (const [code, data] of pairingCodes.entries()) {
-      if (data.machineId === machineId && data.expiresAt > Date.now()) {
-        existingCode = code;
-        break;
-      }
-    }
-
-    const code =
-      existingCode ||
-      (() => {
-        const newCode = generateCode();
-        pairingCodes.set(newCode, {
-          code: newCode,
-          machineId,
-          machineName,
-          agentUrl,
-          createdAt: Date.now(),
-          expiresAt: Date.now() + 10 * 60 * 1000,
-        });
-        return newCode;
-      })();
-
-    const codeData = pairingCodes.get(code)!;
+    const { machineId, machineName, agentUrl, token, pairingLink, codeData } = issuePairing();
 
     res.json({
       machineId,
       machineName,
       agentUrl,
       token,
-      code,
-      pairingLink: `${dashboardUrl}/connect?token=${encodeURIComponent(token)}`,
+      code: codeData.code,
+      pairingLink,
       expiresAt: codeData.expiresAt,
     });
   });
@@ -396,6 +416,14 @@ export function createPairRoutes(): Router {
   // GET /pair/code/:code - Lookup a pairing code (for dashboard to verify)
   router.get('/code/:code', (req, res) => {
     const { code } = req.params;
+
+    if (!isCodeLookupAllowed(Date.now())) {
+      return res.status(429).json({ error: 'Too many attempts, try again later' });
+    }
+    if (!CODE_PATTERN.test(code)) {
+      return res.status(404).json({ error: 'Code not found or expired' });
+    }
+
     const data = pairingCodes.get(code);
 
     if (!data || data.expiresAt < Date.now()) {
@@ -418,8 +446,7 @@ export function createPairRoutes(): Router {
       return res.status(400).json({ error: 'Token is required' });
     }
 
-    const machineId = config.machine.id;
-    const result = verifyToken(token, machineId);
+    const result = verifyToken(token, TOKEN_SECRET);
 
     if (!result.valid) {
       return res.status(401).json({ error: result.error });

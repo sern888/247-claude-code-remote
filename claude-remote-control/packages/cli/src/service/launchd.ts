@@ -9,6 +9,7 @@ import type {
   ServiceResult,
 } from './index.js';
 import { getAgentPaths, getTestableHomedir } from '../lib/paths.js';
+import { loadConfig } from '../lib/config.js';
 import { checkTmux } from '../lib/prerequisites.js';
 
 const execAsync = promisify(exec);
@@ -95,7 +96,7 @@ export class LaunchdService implements ServiceManager {
       keepAlive: true,
       isDev: paths.isDev,
       configPath: paths.configPath,
-      dataDir: paths.dataDir,
+      port: loadConfig()?.agent.port,
     });
 
     writeFileSync(this.plistPath, plistContent, 'utf-8');
@@ -174,8 +175,16 @@ export class LaunchdService implements ServiceManager {
     keepAlive: boolean;
     isDev: boolean;
     configPath: string;
-    dataDir: string;
+    /** Port the agent must listen on; left out when no configuration could be loaded */
+    port?: number;
   }): string {
+    const portEntry =
+      options.port === undefined
+        ? ''
+        : `
+        <key>AGENT_247_PORT</key>
+        <string>${escapeXml(String(options.port))}</string>`;
+
     let programArgs: string;
     if (options.isDev) {
       programArgs = `        <string>/usr/bin/env</string>
@@ -222,9 +231,7 @@ ${programArgs}
     <key>EnvironmentVariables</key>
     <dict>
         <key>AGENT_247_CONFIG</key>
-        <string>${escapeXml(options.configPath)}</string>
-        <key>AGENT_247_DATA</key>
-        <string>${escapeXml(options.dataDir)}</string>
+        <string>${escapeXml(options.configPath)}</string>${portEntry}
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     </dict>

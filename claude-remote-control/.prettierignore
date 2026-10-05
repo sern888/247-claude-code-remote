@@ -24,3 +24,6 @@ pnpm-lock.yaml
 
 # Turbo
 .turbo/
+
+# Reports
+.jscpd-report/

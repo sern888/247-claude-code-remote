@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useId } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   X,
@@ -18,6 +18,14 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { cn, buildWebSocketUrl, stripProtocol } from '@/lib/utils';
+import { useEscapeKey } from '@/components/ui/SlideOverPanel';
+
+const PAIRING_CODE_LENGTH = 6;
+
+/** URL of the pairing page for a code typed by the user (always encoded). */
+export function buildPairingUrl(code: string): string {
+  return `/connect?code=${encodeURIComponent(code)}`;
+}
 
 // Old storage key (for migration)
 const OLD_STORAGE_KEY = 'agentConnection';
@@ -337,7 +345,9 @@ function TailscaleGuide() {
   return (
     <div className="rounded-xl border border-blue-500/20 bg-blue-500/5">
       <button
+        type="button"
         onClick={() => setExpanded(!expanded)}
+        aria-expanded={expanded}
         className="flex w-full items-center justify-between p-4 text-left"
       >
         <div className="flex items-center gap-2 text-sm font-medium text-blue-400">
@@ -371,10 +381,12 @@ function TailscaleGuide() {
                         {step.command}
                       </code>
                       <button
+                        type="button"
                         onClick={() => copyToClipboard(step.command)}
+                        aria-label={`Copy command: ${step.command}`}
                         className="rounded p-1 text-white/40 transition-colors hover:bg-white/10 hover:text-white"
                       >
-                        <Copy className="h-3.5 w-3.5" />
+                        <Copy className="h-3.5 w-3.5" aria-hidden="true" />
                       </button>
                     </div>
                   </div>
@@ -403,6 +415,15 @@ export function AgentConnectionSettings({
   // Input state
   const [localhostPort, setLocalhostPort] = useState('4678');
   const [customUrl, setCustomUrl] = useState('');
+  const [pairingCode, setPairingCode] = useState('');
+
+  // Accessibility wiring
+  const titleId = useId();
+  const portInputId = useId();
+  const quickSelectLabelId = useId();
+  const urlInputId = useId();
+
+  useEscapeKey(open, () => onOpenChange(false));
 
   // Connection testing
   const [testState, setTestState] = useState<TestState>('idle');
@@ -430,6 +451,7 @@ export function AgentConnectionSettings({
         setConnectionType(null);
         setLocalhostPort('4678');
         setCustomUrl('');
+        setPairingCode('');
         setTestState('idle');
       }
     }
@@ -523,6 +545,13 @@ export function AgentConnectionSettings({
     setTestState('idle');
   };
 
+  // Open the pairing page once the full code has been typed
+  const handlePair = () => {
+    if (pairingCode.length === PAIRING_CODE_LENGTH) {
+      window.location.href = buildPairingUrl(pairingCode);
+    }
+  };
+
   return (
     <AnimatePresence>
       {open && (
@@ -534,10 +563,14 @@ export function AgentConnectionSettings({
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-40 bg-black/70 backdrop-blur-sm"
             onClick={() => onOpenChange(false)}
+            aria-hidden="true"
           />
 
           {/* Slide-over panel */}
           <motion.div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={titleId}
             variants={slideVariants}
             initial="hidden"
             animate="visible"
@@ -595,14 +628,18 @@ export function AgentConnectionSettings({
               <div className="flex items-center gap-4">
                 {step === 2 && (
                   <button
+                    type="button"
                     onClick={handleBack}
+                    aria-label="Back to connection type"
                     className="rounded-lg p-2 text-white/40 transition-colors hover:bg-white/5 hover:text-white"
                   >
-                    <ArrowLeft className="h-5 w-5" />
+                    <ArrowLeft className="h-5 w-5" aria-hidden="true" />
                   </button>
                 )}
                 <div>
-                  <h2 className="text-lg font-semibold text-white">Connect Agent</h2>
+                  <h2 id={titleId} className="text-lg font-semibold text-white">
+                    Connect Agent
+                  </h2>
                   <p className="text-sm text-white/40">
                     {step === 1 ? 'Choose connection type' : 'Configure your connection'}
                   </p>
@@ -612,10 +649,12 @@ export function AgentConnectionSettings({
               <div className="flex items-center gap-4">
                 <StepIndicator currentStep={step} />
                 <button
+                  type="button"
                   onClick={() => onOpenChange(false)}
+                  aria-label="Close connection settings"
                   className="rounded-lg p-2 text-white/40 transition-colors hover:bg-white/5 hover:text-white"
                 >
-                  <X className="h-5 w-5" />
+                  <X className="h-5 w-5" aria-hidden="true" />
                 </button>
               </div>
             </div>
@@ -672,8 +711,11 @@ export function AgentConnectionSettings({
                       <div className="flex gap-2">
                         <input
                           type="text"
+                          inputMode="numeric"
+                          aria-label="Pairing code"
                           placeholder="000000"
-                          maxLength={6}
+                          maxLength={PAIRING_CODE_LENGTH}
+                          value={pairingCode}
                           className={cn(
                             'flex-1 rounded-lg px-4 py-2.5',
                             'border border-white/10 bg-white/5',
@@ -681,27 +723,14 @@ export function AgentConnectionSettings({
                             'focus:border-purple-500/50 focus:outline-none focus:ring-2 focus:ring-purple-500/20'
                           )}
                           onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              const input = e.target as HTMLInputElement;
-                              if (input.value.length === 6) {
-                                window.location.href = `/connect?code=${input.value}`;
-                              }
-                            }
+                            if (e.key === 'Enter') handlePair();
                           }}
-                          onChange={(e) => {
-                            // Only allow digits
-                            e.target.value = e.target.value.replace(/\D/g, '');
-                          }}
+                          // Only allow digits
+                          onChange={(e) => setPairingCode(e.target.value.replace(/\D/g, ''))}
                         />
                         <button
-                          onClick={(e) => {
-                            const input = (e.target as HTMLElement)
-                              .closest('div')
-                              ?.querySelector('input') as HTMLInputElement;
-                            if (input?.value.length === 6) {
-                              window.location.href = `/connect?code=${input.value}`;
-                            }
-                          }}
+                          type="button"
+                          onClick={handlePair}
                           className={cn(
                             'rounded-lg px-4 py-2.5',
                             'bg-purple-500/20 text-purple-400',
@@ -725,12 +754,16 @@ export function AgentConnectionSettings({
                     className="space-y-6 p-6"
                   >
                     <div>
-                      <label className="mb-2 block text-sm font-medium text-white/70">
+                      <label
+                        htmlFor={portInputId}
+                        className="mb-2 block text-sm font-medium text-white/70"
+                      >
                         Agent Port
                       </label>
                       <div className="flex items-center gap-3">
                         <span className="font-mono text-white/50">localhost:</span>
                         <input
+                          id={portInputId}
                           type="text"
                           value={localhostPort}
                           onChange={(e) => setLocalhostPort(e.target.value.replace(/\D/g, ''))}
@@ -747,12 +780,16 @@ export function AgentConnectionSettings({
                     </div>
 
                     {/* Quick port buttons */}
-                    <div>
-                      <label className="mb-2 block text-xs text-white/40">Quick select</label>
+                    <div role="group" aria-labelledby={quickSelectLabelId}>
+                      <span id={quickSelectLabelId} className="mb-2 block text-xs text-white/40">
+                        Quick select
+                      </span>
                       <div className="flex gap-2">
                         {['4678', '4679', '4680'].map((port) => (
                           <button
                             key={port}
+                            type="button"
+                            aria-pressed={localhostPort === port}
                             onClick={() => setLocalhostPort(port)}
                             className={cn(
                               'rounded-lg px-4 py-2 font-mono text-sm transition-all',
@@ -850,10 +887,14 @@ export function AgentConnectionSettings({
 
                     {/* URL input */}
                     <div>
-                      <label className="mb-2 block text-sm font-medium text-white/70">
+                      <label
+                        htmlFor={urlInputId}
+                        className="mb-2 block text-sm font-medium text-white/70"
+                      >
                         Agent URL
                       </label>
                       <input
+                        id={urlInputId}
                         type="text"
                         value={customUrl}
                         onChange={(e) => setCustomUrl(e.target.value)}

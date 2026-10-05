@@ -4,7 +4,13 @@
  * Tests for utility functions used across the application.
  */
 import { describe, it, expect } from 'vitest';
-import { cn, stripProtocol, buildWebSocketUrl, buildApiUrl } from '@/lib/utils';
+import {
+  cn,
+  stripProtocol,
+  buildWebSocketUrl,
+  buildApiUrl,
+  buildSessionAcknowledgeUrl,
+} from '@/lib/utils';
 
 describe('Utils', () => {
   describe('cn function', () => {
@@ -232,6 +238,27 @@ describe('Utils', () => {
       expect(
         buildApiUrl('https://macbook-pro.tail5f910b.ts.net:4678', '/api/sessions/archived')
       ).toBe('https://macbook-pro.tail5f910b.ts.net:4678/api/sessions/archived');
+    });
+  });
+
+  describe('buildSessionAcknowledgeUrl', () => {
+    it('adds a protocol to an agent URL stored without one', () => {
+      // Connections are stored as "localhost:4678"; fetch() rejects that as an unknown scheme
+      expect(buildSessionAcknowledgeUrl('localhost:4678', 'fair-fox-44')).toBe(
+        'http://localhost:4678/api/sessions/fair-fox-44/acknowledge'
+      );
+    });
+
+    it('uses https for remote agents', () => {
+      expect(buildSessionAcknowledgeUrl('machine.tailnet.ts.net', 'fair-fox-44')).toBe(
+        'https://machine.tailnet.ts.net/api/sessions/fair-fox-44/acknowledge'
+      );
+    });
+
+    it('encodes session names that are not URL-safe', () => {
+      expect(buildSessionAcknowledgeUrl('localhost:4678', 'my project/a#1')).toBe(
+        'http://localhost:4678/api/sessions/my%20project%2Fa%231/acknowledge'
+      );
     });
   });
 });

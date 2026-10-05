@@ -71,6 +71,8 @@ vi.mock('crypto', () => ({
 vi.mock('child_process', () => ({
   spawn: vi.fn(),
   execSync: vi.fn(() => 'tmux 3.4'),
+  // `ps` output used to confirm that a PID really is the agent
+  execFileSync: vi.fn(() => '/usr/local/bin/node /mock/agent/dist/index.js\n'),
 }));
 
 // Mock os
@@ -169,6 +171,9 @@ describe('full 247 lifecycle', () => {
     // Mock process.kill
     process.kill = createProcessKillMock(runningPids) as any;
 
+    // The spawned agent answers its health check
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }));
+
     // Mock process.exit
     processExitSpy = vi.spyOn(process, 'exit').mockImplementation((code) => {
       throw new Error(`process.exit(${code})`);
@@ -177,6 +182,8 @@ describe('full 247 lifecycle', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
     process.kill = originalKill;
   });
 

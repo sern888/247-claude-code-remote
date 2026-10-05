@@ -19,7 +19,12 @@ export interface UseAgentConnectionsReturn {
   connections: AgentConnection[];
   loading: boolean;
   error: string | null;
-  addConnection: (data: { url: string; name: string; method?: string; color?: string }) => Promise<AgentConnection>;
+  addConnection: (data: {
+    url: string;
+    name: string;
+    method?: string;
+    color?: string;
+  }) => Promise<AgentConnection>;
   removeConnection: (id: string) => Promise<void>;
   updateConnection: (
     id: string,

@@ -53,8 +53,11 @@ export function useTerminalSearch(
         e.preventDefault();
         openSearch();
       }
-      // Escape = Close search
-      if (e.key === 'Escape' && searchVisible) {
+      // Escape = Close search. Mark the event as handled so the page-level
+      // "Escape leaves the session" shortcut ignores it.
+      if (e.key === 'Escape' && searchVisible && !e.defaultPrevented) {
+        e.preventDefault();
+        e.stopPropagation();
         closeSearch();
       }
       // Enter in search = Find next

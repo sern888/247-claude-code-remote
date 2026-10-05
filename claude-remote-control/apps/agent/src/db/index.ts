@@ -1,11 +1,12 @@
 import Database from 'better-sqlite3';
 import { existsSync, mkdirSync } from 'fs';
+import { homedir } from 'os';
 import { dirname, join, resolve } from 'path';
 import { CREATE_TABLES_SQL, SCHEMA_VERSION, RETENTION_CONFIG, MIGRATION_16 } from './schema.js';
 import type { DbSchemaVersion } from './schema.js';
 
 // Database file location: ~/.247/data/agent.db
-const DATA_DIR = resolve(process.env.HOME || '~', '.247', 'data');
+const DATA_DIR = resolve(homedir(), '.247', 'data');
 const DB_PATH = join(DATA_DIR, 'agent.db');
 
 // Singleton database instance
@@ -80,31 +81,37 @@ function runMigrations(database: Database.Database): void {
   if (currentVersion < SCHEMA_VERSION) {
     console.log(`[DB] Running migrations from v${currentVersion} to v${SCHEMA_VERSION}`);
 
-    // For fresh databases, just run the simplified schema
-    if (currentVersion === 0) {
-      database.exec(CREATE_TABLES_SQL);
-    } else {
-      // For existing databases, run migrations in order
-      if (currentVersion < 15) {
-        migrateToV15(database);
+    // All or nothing: a crash halfway (e.g. between dropping and renaming the
+    // sessions table) must roll back instead of leaving a database that can
+    // no longer be opened.
+    const migrate = database.transaction(() => {
+      // For fresh databases, just run the simplified schema
+      if (currentVersion === 0) {
+        database.exec(CREATE_TABLES_SQL);
+      } else {
+        // For existing databases, run migrations in order
+        if (currentVersion < 15) {
+          migrateToV15(database);
+        }
+        if (currentVersion < 16) {
+          migrateToV16(database);
+        }
+        if (currentVersion < 17) {
+          migrateToV17(database);
+        }
       }
-      if (currentVersion < 16) {
-        migrateToV16(database);
-      }
-      if (currentVersion < 17) {
-        migrateToV17(database);
-      }
-    }
 
-    // Record the new version
-    database
-      .prepare(
-        `
-      INSERT OR REPLACE INTO schema_version (version, applied_at)
-      VALUES (?, ?)
-    `
-      )
-      .run(SCHEMA_VERSION, Date.now());
+      // Record the new version
+      database
+        .prepare(
+          `
+        INSERT OR REPLACE INTO schema_version (version, applied_at)
+        VALUES (?, ?)
+      `
+        )
+        .run(SCHEMA_VERSION, Date.now());
+    });
+    migrate();
 
     console.log(`[DB] Migrations complete. Now at v${SCHEMA_VERSION}`);
   } else {

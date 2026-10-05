@@ -34,3 +34,10 @@ export function buildApiUrl(agentUrl: string, path: string): string {
   const protocol = isLocalhost ? 'http' : 'https';
   return `${protocol}://${cleanUrl}${path}`;
 }
+
+/**
+ * Build the agent URL that clears a session's needs_attention status
+ */
+export function buildSessionAcknowledgeUrl(agentUrl: string, sessionName: string): string {
+  return buildApiUrl(agentUrl, `/api/sessions/${encodeURIComponent(sessionName)}/acknowledge`);
+}

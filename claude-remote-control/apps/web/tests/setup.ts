@@ -1,6 +1,14 @@
 // Test setup for web app
 import { vi } from 'vitest';
 
+// framer-motion drives animations through the Web Animations API whenever
+// Element.prototype.animate exists. happy-dom implements it since 20.14, but
+// its Animation.cancel() rejects the "finished" promise, which framer-motion
+// does not handle and vitest then reports as an unhandled rejection on every
+// unmount. Without the API framer-motion falls back to JS animations, which
+// is what the tests ran against before.
+delete (Element.prototype as { animate?: unknown }).animate;
+
 function createStorageMock() {
   let store: Record<string, string> = {};
 

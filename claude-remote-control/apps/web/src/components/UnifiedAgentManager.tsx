@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useId } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   X,
@@ -26,6 +26,7 @@ import {
 import { cn, buildWebSocketUrl, stripProtocol } from '@/lib/utils';
 import type { StoredAgentConnection } from './AgentConnectionSettings';
 import { EditAgentModal } from './EditAgentModal';
+import { useEscapeKey } from '@/components/ui/SlideOverPanel';
 
 // ============================================================================
 // TYPES
@@ -206,15 +207,23 @@ function ConnectedAgentCard({
 
         <div className="flex shrink-0 gap-1">
           <button
+            type="button"
             onClick={onEdit}
             className="rounded-lg p-2 text-white/30 transition-all hover:bg-white/10 hover:text-white"
             title="Edit machine"
+            aria-label={`Edit ${agent.name}`}
           >
-            <Pencil className="h-4 w-4" />
+            <Pencil className="h-4 w-4" aria-hidden="true" />
           </button>
           <button
+            type="button"
             onClick={onDisconnect}
             disabled={isOnlyAgent}
+            aria-label={
+              isOnlyAgent
+                ? `Cannot disconnect ${agent.name}: only agent`
+                : `Disconnect ${agent.name}`
+            }
             className={cn(
               'rounded-lg p-2 transition-all',
               isOnlyAgent
@@ -223,7 +232,7 @@ function ConnectedAgentCard({
             )}
             title={isOnlyAgent ? 'Cannot disconnect only agent' : 'Disconnect'}
           >
-            <WifiOff className="h-4 w-4" />
+            <WifiOff className="h-4 w-4" aria-hidden="true" />
           </button>
         </div>
       </div>
@@ -285,7 +294,9 @@ function TailscaleGuide() {
   return (
     <div className="rounded-xl border border-blue-500/20 bg-blue-500/5">
       <button
+        type="button"
         onClick={() => setExpanded(!expanded)}
+        aria-expanded={expanded}
         className="flex w-full items-center justify-between p-3 text-left"
       >
         <div className="flex items-center gap-2 text-sm font-medium text-blue-400">
@@ -319,10 +330,12 @@ function TailscaleGuide() {
                         {step.command}
                       </code>
                       <button
+                        type="button"
                         onClick={() => copyToClipboard(step.command)}
+                        aria-label={`Copy command: ${step.command}`}
                         className="rounded p-1 text-white/40 transition-colors hover:bg-white/10 hover:text-white"
                       >
-                        <Copy className="h-3.5 w-3.5" />
+                        <Copy className="h-3.5 w-3.5" aria-hidden="true" />
                       </button>
                     </div>
                   </div>
@@ -347,6 +360,7 @@ function AddAgentForm({
 }) {
   const [url, setUrl] = useState(type === 'local' ? '4678' : '');
   const [testState, setTestState] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+  const urlInputId = useId();
 
   const getFullUrl = useCallback(() => {
     if (type === 'local') return `localhost:${url}`;
@@ -414,10 +428,12 @@ function AddAgentForm({
     >
       <div className="flex items-center gap-3">
         <button
+          type="button"
           onClick={onBack}
+          aria-label="Back to agent list"
           className="rounded-lg p-2 text-white/40 transition-colors hover:bg-white/5 hover:text-white"
         >
-          <ArrowLeft className="h-4 w-4" />
+          <ArrowLeft className="h-4 w-4" aria-hidden="true" />
         </button>
         <h3 className="text-sm font-semibold text-white">{titles[type]}</h3>
       </div>
@@ -425,10 +441,13 @@ function AddAgentForm({
       <div className="space-y-4">
         {type === 'local' && (
           <div>
-            <label className="mb-2 block text-xs font-medium text-white/60">Agent Port</label>
+            <label htmlFor={urlInputId} className="mb-2 block text-xs font-medium text-white/60">
+              Agent Port
+            </label>
             <div className="flex items-center gap-3">
               <span className="font-mono text-sm text-white/50">localhost:</span>
               <input
+                id={urlInputId}
                 type="text"
                 value={url}
                 onChange={(e) => setUrl(e.target.value.replace(/\D/g, ''))}
@@ -440,6 +459,8 @@ function AddAgentForm({
               {['4678', '4679', '4680'].map((port) => (
                 <button
                   key={port}
+                  type="button"
+                  aria-pressed={url === port}
                   onClick={() => setUrl(port)}
                   className={cn(
                     'rounded-lg px-3 py-1.5 font-mono text-xs transition-all',
@@ -457,8 +478,11 @@ function AddAgentForm({
 
         {(type === 'tailscale' || type === 'custom') && (
           <div>
-            <label className="mb-2 block text-xs font-medium text-white/60">Agent URL</label>
+            <label htmlFor={urlInputId} className="mb-2 block text-xs font-medium text-white/60">
+              Agent URL
+            </label>
             <input
+              id={urlInputId}
               type="text"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
@@ -573,6 +597,9 @@ export function UnifiedAgentManager({
 }: UnifiedAgentManagerProps) {
   const [view, setView] = useState<ViewState>('main');
   const [editingAgent, setEditingAgent] = useState<StoredAgentConnection | null>(null);
+  const titleId = useId();
+
+  useEscapeKey(open, onClose);
 
   const handleNewConnection = (connection: Omit<StoredAgentConnection, 'id' | 'createdAt'>) => {
     onConnectNewAgent(connection);
@@ -580,145 +607,157 @@ export function UnifiedAgentManager({
   };
 
   return (
-    <AnimatePresence>
-      {open && (
-        <>
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-40 bg-black/70 backdrop-blur-sm"
-            onClick={onClose}
-          />
+    <>
+      <AnimatePresence>
+        {open && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-40 bg-black/70 backdrop-blur-sm"
+              onClick={onClose}
+              aria-hidden="true"
+            />
 
-          <motion.div
-            variants={slideVariants}
-            initial="hidden"
-            animate="visible"
-            exit="exit"
-            className="fixed inset-y-0 right-0 z-50 flex w-full flex-col bg-[#0a0a10] shadow-2xl sm:max-w-md"
-          >
-            <div className="flex items-center justify-between border-b border-white/5 px-5 py-4">
-              <div className="flex items-center gap-3">
-                <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-orange-500/20 bg-gradient-to-br from-orange-500/20 to-amber-500/20">
-                  <Zap className="h-4 w-4 text-orange-500" />
+            <motion.div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby={titleId}
+              variants={slideVariants}
+              initial="hidden"
+              animate="visible"
+              exit="exit"
+              className="fixed inset-y-0 right-0 z-50 flex w-full flex-col bg-[#0a0a10] shadow-2xl sm:max-w-md"
+            >
+              <div className="flex items-center justify-between border-b border-white/5 px-5 py-4">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-orange-500/20 bg-gradient-to-br from-orange-500/20 to-amber-500/20">
+                    <Zap className="h-4 w-4 text-orange-500" />
+                  </div>
+                  <div>
+                    <h2 id={titleId} className="text-base font-semibold text-white">
+                      Agent Manager
+                    </h2>
+                    <p className="text-[11px] text-white/40">{connectedAgents.length} connected</p>
+                  </div>
                 </div>
-                <div>
-                  <h2 className="text-base font-semibold text-white">Agent Manager</h2>
-                  <p className="text-[11px] text-white/40">{connectedAgents.length} connected</p>
-                </div>
+                <button
+                  type="button"
+                  onClick={onClose}
+                  aria-label="Close agent manager"
+                  className="rounded-lg p-2 text-white/40 transition-colors hover:bg-white/5 hover:text-white"
+                >
+                  <X className="h-5 w-5" aria-hidden="true" />
+                </button>
               </div>
-              <button
-                onClick={onClose}
-                className="rounded-lg p-2 text-white/40 transition-colors hover:bg-white/5 hover:text-white"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
 
-            <div className="flex-1 overflow-y-auto">
-              <AnimatePresence mode="wait">
-                {view === 'main' ? (
-                  <motion.div
-                    key="main"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    className="space-y-6 p-4"
-                  >
-                    <section>
-                      <div className="mb-3 flex items-center justify-between">
-                        <h3 className="text-xs font-semibold uppercase tracking-wider text-white/50">
-                          Connected Agents
+              <div className="flex-1 overflow-y-auto">
+                <AnimatePresence mode="wait">
+                  {view === 'main' ? (
+                    <motion.div
+                      key="main"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      className="space-y-6 p-4"
+                    >
+                      <section>
+                        <div className="mb-3 flex items-center justify-between">
+                          <h3 className="text-xs font-semibold uppercase tracking-wider text-white/50">
+                            Connected Agents
+                          </h3>
+                          <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-medium text-emerald-400">
+                            {
+                              connectedAgents.filter((a) => agentStatuses.get(a.id) === 'online')
+                                .length
+                            }{' '}
+                            online
+                          </span>
+                        </div>
+
+                        {connectedAgents.length === 0 ? (
+                          <div className="rounded-xl border border-dashed border-white/10 bg-white/[0.02] px-4 py-6 text-center">
+                            <WifiOff className="mx-auto mb-2 h-8 w-8 text-white/20" />
+                            <p className="text-sm text-white/40">No agents connected</p>
+                            <p className="mt-1 text-xs text-white/25">
+                              Add an agent to get started
+                            </p>
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            <AnimatePresence>
+                              {connectedAgents.map((agent) => (
+                                <ConnectedAgentCard
+                                  key={agent.id}
+                                  agent={agent}
+                                  status={agentStatuses.get(agent.id) || 'connecting'}
+                                  sessionCount={sessionCounts.get(agent.id) || 0}
+                                  onDisconnect={() => onDisconnectAgent(agent.id)}
+                                  onEdit={() => setEditingAgent(agent)}
+                                  isOnlyAgent={connectedAgents.length === 1}
+                                />
+                              ))}
+                            </AnimatePresence>
+                          </div>
+                        )}
+                      </section>
+
+                      <section>
+                        <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-white/50">
+                          Add Agent
                         </h3>
-                        <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-medium text-emerald-400">
-                          {
-                            connectedAgents.filter((a) => agentStatuses.get(a.id) === 'online')
-                              .length
-                          }{' '}
-                          online
-                        </span>
-                      </div>
-
-                      {connectedAgents.length === 0 ? (
-                        <div className="rounded-xl border border-dashed border-white/10 bg-white/[0.02] px-4 py-6 text-center">
-                          <WifiOff className="mx-auto mb-2 h-8 w-8 text-white/20" />
-                          <p className="text-sm text-white/40">No agents connected</p>
-                          <p className="mt-1 text-xs text-white/25">Add an agent to get started</p>
-                        </div>
-                      ) : (
                         <div className="space-y-2">
-                          <AnimatePresence>
-                            {connectedAgents.map((agent) => (
-                              <ConnectedAgentCard
-                                key={agent.id}
-                                agent={agent}
-                                status={agentStatuses.get(agent.id) || 'connecting'}
-                                sessionCount={sessionCounts.get(agent.id) || 0}
-                                onDisconnect={() => onDisconnectAgent(agent.id)}
-                                onEdit={() => setEditingAgent(agent)}
-                                isOnlyAgent={connectedAgents.length === 1}
-                              />
-                            ))}
-                          </AnimatePresence>
+                          <AddAgentOption
+                            icon={Home}
+                            title="Same Computer"
+                            description="Agent running on this device"
+                            badge="Safest"
+                            badgeColor="bg-emerald-500/20 text-emerald-400"
+                            onClick={() => setView('add-local')}
+                          />
+                          <AddAgentOption
+                            icon={Globe}
+                            title="Tailscale Funnel"
+                            description="Secure remote access via Tailscale"
+                            badge="Secure"
+                            badgeColor="bg-blue-500/20 text-blue-400"
+                            onClick={() => setView('add-tailscale')}
+                          />
+                          <AddAgentOption
+                            icon={Wifi}
+                            title="Custom URL"
+                            description="Any accessible endpoint"
+                            badge="Advanced"
+                            badgeColor="bg-amber-500/20 text-amber-400"
+                            onClick={() => setView('add-custom')}
+                          />
                         </div>
-                      )}
-                    </section>
+                      </section>
+                    </motion.div>
+                  ) : (
+                    <motion.div key={view} className="p-4">
+                      <AddAgentForm
+                        type={view.replace('add-', '') as 'local' | 'tailscale' | 'custom'}
+                        onBack={() => setView('main')}
+                        onSubmit={handleNewConnection}
+                      />
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
 
-                    <section>
-                      <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-white/50">
-                        Add Agent
-                      </h3>
-                      <div className="space-y-2">
-                        <AddAgentOption
-                          icon={Home}
-                          title="Same Computer"
-                          description="Agent running on this device"
-                          badge="Safest"
-                          badgeColor="bg-emerald-500/20 text-emerald-400"
-                          onClick={() => setView('add-local')}
-                        />
-                        <AddAgentOption
-                          icon={Globe}
-                          title="Tailscale Funnel"
-                          description="Secure remote access via Tailscale"
-                          badge="Secure"
-                          badgeColor="bg-blue-500/20 text-blue-400"
-                          onClick={() => setView('add-tailscale')}
-                        />
-                        <AddAgentOption
-                          icon={Wifi}
-                          title="Custom URL"
-                          description="Any accessible endpoint"
-                          badge="Advanced"
-                          badgeColor="bg-amber-500/20 text-amber-400"
-                          onClick={() => setView('add-custom')}
-                        />
-                      </div>
-                    </section>
-                  </motion.div>
-                ) : (
-                  <motion.div key={view} className="p-4">
-                    <AddAgentForm
-                      type={view.replace('add-', '') as 'local' | 'tailscale' | 'custom'}
-                      onBack={() => setView('main')}
-                      onSubmit={handleNewConnection}
-                    />
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
+              <div className="border-t border-white/5 bg-white/[0.02] px-4 py-3">
+                <p className="text-center text-[10px] text-white/30">
+                  Connections saved locally in your browser
+                </p>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
 
-            <div className="border-t border-white/5 bg-white/[0.02] px-4 py-3">
-              <p className="text-center text-[10px] text-white/30">
-                Connections saved locally in your browser
-              </p>
-            </div>
-          </motion.div>
-        </>
-      )}
-
-      {/* Edit Agent Modal */}
+      {/* Edit Agent Modal: a sibling of the slide-over, not a child of its AnimatePresence */}
       <EditAgentModal
         open={!!editingAgent}
         onClose={() => setEditingAgent(null)}
@@ -730,6 +769,6 @@ export function UnifiedAgentManager({
           setEditingAgent(null);
         }}
       />
-    </AnimatePresence>
+    </>
   );
 }

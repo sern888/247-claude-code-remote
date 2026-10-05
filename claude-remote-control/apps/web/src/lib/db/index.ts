@@ -8,7 +8,11 @@ let _db: NeonHttpDatabase<typeof schema> | null = null;
 
 function getSQL() {
   if (!_sql) {
-    _sql = neon(process.env.DATABASE_URL!);
+    const databaseUrl = process.env.DATABASE_URL;
+    if (!databaseUrl) {
+      throw new Error('DATABASE_URL is not set');
+    }
+    _sql = neon(databaseUrl);
   }
   return _sql;
 }

@@ -374,7 +374,9 @@
       "Bash(python3:*)"
     ]
   },
-  "remote": {
-    "defaultEnvironmentId": "env_013jWP8p4h8Vz8D1nFR71YAT"
-  }
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "chrome-devtools"
+  ],
+  "remote": {}
 }

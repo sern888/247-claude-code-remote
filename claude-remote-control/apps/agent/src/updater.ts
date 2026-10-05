@@ -5,12 +5,15 @@
  */
 
 import { spawn } from 'child_process';
-import { writeFileSync } from 'fs';
-import { platform } from 'os';
+import { mkdtempSync, writeFileSync } from 'fs';
+import { platform, tmpdir } from 'os';
+import { join } from 'path';
 import { logger } from './logger.js';
 import { broadcastUpdatePending } from './websocket-handlers.js';
+import { isValidSemver } from './lib/validation.js';
 
-const UPDATE_SCRIPT = '/tmp/247-update.sh';
+const UPDATE_DIR_PREFIX = '247-update-';
+const UPDATE_SCRIPT_NAME = 'update.sh';
 const PACKAGE_NAME = '247-cli';
 
 let updateInProgress = false;
@@ -35,6 +38,13 @@ export function triggerUpdate(targetVersion: string): void {
     return;
   }
 
+  // The version is interpolated into a shell script below, and it originates
+  // from a WebSocket client: anything but a plain semver must be refused.
+  if (!isValidSemver(targetVersion)) {
+    logger.main.error('Refusing auto-update: target version is not a valid semver');
+    return;
+  }
+
   updateInProgress = true;
   logger.main.info({ targetVersion }, 'Auto-update triggered');
 
@@ -53,6 +63,17 @@ export function triggerUpdate(targetVersion: string): void {
     restartCommand = 'systemctl --user restart 247-agent 2>/dev/null || 247 start';
   } else {
     logger.main.error({ os }, 'Unsupported platform for auto-update');
+    updateInProgress = false;
+    return;
+  }
+
+  // A private, unpredictable directory: a fixed path in /tmp could be
+  // pre-created or symlinked by another local user.
+  let updateScript: string;
+  try {
+    updateScript = join(mkdtempSync(join(tmpdir(), UPDATE_DIR_PREFIX)), UPDATE_SCRIPT_NAME);
+  } catch (err) {
+    logger.main.error({ err }, 'Failed to create update directory');
     updateInProgress = false;
     return;
   }
@@ -93,12 +114,12 @@ echo "[247] Restarting agent..."
 ${restartCommand}
 
 echo "[247] Auto-update complete"
-rm -f "${UPDATE_SCRIPT}"
+rm -f "${updateScript}"
 `;
 
   try {
-    writeFileSync(UPDATE_SCRIPT, script, { mode: 0o755 });
-    logger.main.info({ path: UPDATE_SCRIPT }, 'Update script created');
+    writeFileSync(updateScript, script, { mode: 0o700, flag: 'wx' });
+    logger.main.info({ path: updateScript }, 'Update script created');
   } catch (err) {
     logger.main.error({ err }, 'Failed to write update script');
     updateInProgress = false;
@@ -111,7 +132,7 @@ rm -f "${UPDATE_SCRIPT}"
   const extraPath = process.env.PATH || '';
 
   // Spawn detached updater process
-  const updater = spawn('bash', [UPDATE_SCRIPT], {
+  const updater = spawn('bash', [updateScript], {
     detached: true,
     stdio: 'ignore',
     env: {

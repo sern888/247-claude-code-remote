@@ -12,6 +12,25 @@ import {
   getProfilePath,
 } from '../lib/config.js';
 import { ensureDirectories } from '../lib/paths.js';
+import { requirePort, requireValidProfileName } from '../lib/cli-input.js';
+
+interface InitOptions {
+  name?: string;
+  port: string;
+  projects: string;
+  force?: boolean;
+  profile?: string;
+}
+
+async function promptForText(name: string, message: string, initial: string): Promise<string> {
+  const response = await enquirer.prompt<Record<string, string>>({
+    type: 'input',
+    name,
+    message,
+    initial,
+  });
+  return response[name];
+}
 
 export const initCommand = new Command('init')
   .description('Initialize 247 agent configuration')
@@ -20,9 +39,11 @@ export const initCommand = new Command('init')
   .option('--projects <path>', 'Projects base path', '~/Dev')
   .option('-f, --force', 'Overwrite existing configuration')
   .option('-P, --profile <name>', 'Create or update a named profile')
-  .action(async (options, cmd) => {
+  .action(async (options: InitOptions, cmd: Command) => {
     // Get profile from command option or parent (global) option
-    const profileName = options.profile || cmd.parent?.opts().profile;
+    const profileName: string | undefined = options.profile || cmd.parent?.opts().profile;
+    requireValidProfileName(profileName);
+    const port = requirePort(options.port, '--port');
     const profileLabel = profileName ? ` (profile: ${profileName})` : '';
 
     console.log(`
@@ -45,7 +66,6 @@ export const initCommand = new Command('init')
 
     // Check prerequisites
     const spinner = ora('Checking prerequisites...').start();
-    const port = parseInt(options.port, 10);
     const checks = await checkAllPrerequisites(port);
     spinner.stop();
 
@@ -67,28 +87,12 @@ export const initCommand = new Command('init')
     }
 
     // Gather configuration
-    let machineName = options.name;
-    let projectsPath = options.projects;
-
-    if (!machineName) {
-      const response = await (enquirer as any).prompt({
-        type: 'input',
-        name: 'machineName',
-        message: 'Machine name:',
-        initial: hostname(),
-      });
-      machineName = response.machineName;
-    }
-
-    if (!options.name) {
-      const response = await (enquirer as any).prompt({
-        type: 'input',
-        name: 'projectsPath',
-        message: 'Projects directory:',
-        initial: projectsPath,
-      });
-      projectsPath = response.projectsPath;
-    }
+    // Both values are prompted for unless the machine name was given on the command line
+    const machineName =
+      options.name || (await promptForText('machineName', 'Machine name:', hostname()));
+    const projectsPath = options.name
+      ? options.projects
+      : await promptForText('projectsPath', 'Projects directory:', options.projects);
 
     // Create and save configuration
     const configSpinner = ora(`Creating configuration${profileLabel}...`).start();

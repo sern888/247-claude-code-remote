@@ -54,13 +54,10 @@ describe('Server Helpers', () => {
       ['stopped', 'running', true],
       ['ended', 'running', false], // Can't restart ended session
       ['permission', 'running', true],
-    ] as const)(
-      'validates transition from %s to %s is %s',
-      (from, to, isValid) => {
-        const validTargets = VALID_TRANSITIONS[from];
-        expect(validTargets.includes(to)).toBe(isValid);
-      }
-    );
+    ] as const)('validates transition from %s to %s is %s', (from, to, isValid) => {
+      const validTargets = VALID_TRANSITIONS[from];
+      expect(validTargets.includes(to)).toBe(isValid);
+    });
   });
 
   describe('Hook event parsing', () => {

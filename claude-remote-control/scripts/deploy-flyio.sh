@@ -7,6 +7,18 @@ set -euo pipefail
 APP_NAME="${1:-247-agent}"
 REGION="${2:-cdg}"  # Paris by default
 
+# The agent has no authentication. Deploying it behind a public URL gives a
+# shell in the container (and ANTHROPIC_API_KEY) to anyone who finds that URL.
+if [ "${ALLOW_PUBLIC_AGENT:-}" != "1" ]; then
+    echo "Refusing to deploy: this publishes the agent at https://$APP_NAME.fly.dev"
+    echo "and the agent has no authentication. Anyone who learns the URL can open a"
+    echo "terminal in the container and read its secrets."
+    echo ""
+    echo "Put it behind a private network (for example a Fly private IP or Tailscale),"
+    echo "or re-run with ALLOW_PUBLIC_AGENT=1 if you accept the risk."
+    exit 1
+fi
+
 echo "Deploying 247 Agent to Fly.io..."
 echo "  App: $APP_NAME"
 echo "  Region: $REGION"

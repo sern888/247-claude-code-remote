@@ -40,7 +40,8 @@ function initTestDb(dbInstance: Database.Database): void {
 }
 
 function getSession(dbInstance: Database.Database, name: string): DbSession | null {
-  const row = dbInstance.prepare('SELECT * FROM sessions WHERE name = ?').get(name) as DbSession | undefined;
+  const row = dbInstance.prepare('SELECT * FROM sessions WHERE name = ?').get(name) as
+    DbSession | undefined;
   return row ?? null;
 }
 

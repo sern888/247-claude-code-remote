@@ -82,7 +82,7 @@
   font-weight: 500;
   letter-spacing: 0.01em;
   border-radius: var(--radius-sm);
-  background: oklch(0.20 0.005 60);
+  background: oklch(0.2 0.005 60);
   color: var(--foreground-muted);
   border: 1px solid oklch(1 0 0 / 0.06);
 }
@@ -112,9 +112,9 @@
 }
 
 .badge-blue {
-  background: oklch(0.60 0.16 250 / 0.12);
+  background: oklch(0.6 0.16 250 / 0.12);
   color: oklch(0.66 0.14 250);
-  border-color: oklch(0.60 0.16 250 / 0.2);
+  border-color: oklch(0.6 0.16 250 / 0.2);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -203,7 +203,8 @@
    Animations
    ───────────────────────────────────────────────────────────────────────────── */
 @keyframes status-pulse {
-  0%, 100% {
+  0%,
+  100% {
     transform: scale(1);
     opacity: 0.6;
   }
@@ -272,12 +273,7 @@
 }
 
 .animate-shimmer {
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    oklch(1 0 0 / 0.03) 50%,
-    transparent 100%
-  );
+  background: linear-gradient(90deg, transparent 0%, oklch(1 0 0 / 0.03) 50%, transparent 100%);
   background-size: 200% 100%;
   animation: shimmer 2.5s ease-in-out infinite;
 }
@@ -290,16 +286,36 @@
   animation: fade-in-up var(--duration-normal) var(--ease-out) forwards;
 }
 
-.stagger-children > *:nth-child(1) { animation-delay: 0ms; }
-.stagger-children > *:nth-child(2) { animation-delay: 20ms; }
-.stagger-children > *:nth-child(3) { animation-delay: 40ms; }
-.stagger-children > *:nth-child(4) { animation-delay: 60ms; }
-.stagger-children > *:nth-child(5) { animation-delay: 80ms; }
-.stagger-children > *:nth-child(6) { animation-delay: 100ms; }
-.stagger-children > *:nth-child(7) { animation-delay: 120ms; }
-.stagger-children > *:nth-child(8) { animation-delay: 140ms; }
-.stagger-children > *:nth-child(9) { animation-delay: 160ms; }
-.stagger-children > *:nth-child(10) { animation-delay: 180ms; }
+.stagger-children > *:nth-child(1) {
+  animation-delay: 0ms;
+}
+.stagger-children > *:nth-child(2) {
+  animation-delay: 20ms;
+}
+.stagger-children > *:nth-child(3) {
+  animation-delay: 40ms;
+}
+.stagger-children > *:nth-child(4) {
+  animation-delay: 60ms;
+}
+.stagger-children > *:nth-child(5) {
+  animation-delay: 80ms;
+}
+.stagger-children > *:nth-child(6) {
+  animation-delay: 100ms;
+}
+.stagger-children > *:nth-child(7) {
+  animation-delay: 120ms;
+}
+.stagger-children > *:nth-child(8) {
+  animation-delay: 140ms;
+}
+.stagger-children > *:nth-child(9) {
+  animation-delay: 160ms;
+}
+.stagger-children > *:nth-child(10) {
+  animation-delay: 180ms;
+}
 
 /* ─────────────────────────────────────────────────────────────────────────────
    Resize Handle

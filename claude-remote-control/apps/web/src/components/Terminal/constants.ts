@@ -37,23 +37,72 @@ export const TERMINAL_THEME = {
   brightWhite: '#fafafa',
 };
 
-// Session name generator (same as agent)
+// Session names
+// The agent only accepts names matching /^[\w-]{1,100}$/ (they become tmux targets).
+export const SESSION_NAME_MAX_LENGTH = 100;
+export const SESSION_NAME_SEPARATOR = '--';
+/** Suffix of the placeholder name a session has until the agent confirms its real name. */
+export const NEW_SESSION_SUFFIX = 'new';
+
+const SESSION_NAME_UNSAFE_CHARS = /[^A-Za-z0-9_-]/g;
+const SESSION_NAME_REPLACEMENT = '_';
+const SESSION_NAME_ADJECTIVES = [
+  'brave',
+  'swift',
+  'calm',
+  'bold',
+  'wise',
+  'keen',
+  'fair',
+  'wild',
+  'bright',
+  'cool',
+];
+const SESSION_NAME_NOUNS = [
+  'lion',
+  'hawk',
+  'wolf',
+  'bear',
+  'fox',
+  'owl',
+  'deer',
+  'lynx',
+  'eagle',
+  'tiger',
+];
+const SESSION_NAME_NUMBER_RANGE = 100;
+
+function pickRandom(items: readonly string[]): string {
+  return items[Math.floor(Math.random() * items.length)];
+}
+
+/**
+ * Make an arbitrary project name usable inside a session name
+ * (same replacement as the agent's sanitizeSessionNamePart).
+ */
+export function sanitizeSessionNamePart(value: string): string {
+  return value.replace(SESSION_NAME_UNSAFE_CHARS, SESSION_NAME_REPLACEMENT);
+}
+
+/** Make a complete, externally supplied session name acceptable to the agent. */
+export function sanitizeSessionName(name: string): string {
+  return sanitizeSessionNamePart(name).slice(0, SESSION_NAME_MAX_LENGTH);
+}
+
+/**
+ * Build `<project>--<suffix>` with a sanitised project part, truncating the
+ * project so the whole name never exceeds SESSION_NAME_MAX_LENGTH.
+ */
+export function buildSessionName(project: string, suffix: string): string {
+  const tail = `${SESSION_NAME_SEPARATOR}${suffix}`;
+  const maxProjectLength = Math.max(0, SESSION_NAME_MAX_LENGTH - tail.length);
+  return `${sanitizeSessionNamePart(project).slice(0, maxProjectLength)}${tail}`;
+}
+
+// Session name generator (same shape as the agent's)
 export function generateSessionName(project: string): string {
-  const adjectives = [
-    'brave',
-    'swift',
-    'calm',
-    'bold',
-    'wise',
-    'keen',
-    'fair',
-    'wild',
-    'bright',
-    'cool',
-  ];
-  const nouns = ['lion', 'hawk', 'wolf', 'bear', 'fox', 'owl', 'deer', 'lynx', 'eagle', 'tiger'];
-  const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
-  const noun = nouns[Math.floor(Math.random() * nouns.length)];
-  const num = Math.floor(Math.random() * 100);
-  return `${project}--${adj}-${noun}-${num}`;
+  const adjective = pickRandom(SESSION_NAME_ADJECTIVES);
+  const noun = pickRandom(SESSION_NAME_NOUNS);
+  const number = Math.floor(Math.random() * SESSION_NAME_NUMBER_RANGE);
+  return buildSessionName(project, `${adjective}-${noun}-${number}`);
 }

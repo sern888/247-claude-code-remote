@@ -8,25 +8,48 @@ import {
   unlinkSync,
 } from 'fs';
 import { join, dirname } from 'path';
-import { homedir } from 'os';
 import { fileURLToPath } from 'url';
+import { getTestableHomedir } from './paths.js';
+import {
+  type ClaudeSettings,
+  commandReferencesScript,
+  isRecord,
+  readClaudeSettings,
+  removeScriptHooks,
+  writeClaudeSettings,
+} from './claude-settings.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Paths
-const CLAUDE_SETTINGS_PATH = join(homedir(), '.claude', 'settings.json');
-const CODEX_CONFIG_PATH = join(homedir(), '.codex', 'config.toml');
-const HOOKS_DIR = join(homedir(), '.247', 'hooks');
 const HOOK_SCRIPT_NAME = 'notify-247.sh';
-const HOOK_SCRIPT_PATH = join(HOOKS_DIR, HOOK_SCRIPT_NAME);
 const CODEX_NOTIFY_LINE = `notify = ["bash", "~/.247/hooks/${HOOK_SCRIPT_NAME}"]`;
 const CODEX_NOTIFY_REGEX = /^\s*notify\s*=\s*\[[^\]]*\]\s*$/m;
 
 // Hook configuration for Claude Code settings.json
 const HOOK_MATCHER = '*';
-const HOOK_COMMAND = `bash ${HOOK_SCRIPT_PATH}`;
 // All hook types we need to register
 const HOOK_TYPES = ['Stop', 'PermissionRequest', 'Notification'] as const;
+
+// Paths are resolved on demand so the AGENT_247_HOME override is always honoured.
+function getClaudeSettingsPath(): string {
+  return join(getTestableHomedir(), '.claude', 'settings.json');
+}
+
+function getCodexConfigPath(): string {
+  return join(getTestableHomedir(), '.codex', 'config.toml');
+}
+
+function getHooksDir(): string {
+  return join(getTestableHomedir(), '.247', 'hooks');
+}
+
+function getHookScriptPath(): string {
+  return join(getHooksDir(), HOOK_SCRIPT_NAME);
+}
+
+function getHookCommand(): string {
+  return `bash ${getHookScriptPath()}`;
+}
 
 export interface HookStatus {
   installed: boolean;
@@ -107,7 +130,7 @@ function extractVersion(scriptPath: string): string | null {
  * Get the version of the installed hook script.
  */
 export function getHookVersion(): string | null {
-  return extractVersion(HOOK_SCRIPT_PATH);
+  return extractVersion(getHookScriptPath());
 }
 
 /**
@@ -138,32 +161,38 @@ export function getPackagedHookVersion(): string {
  */
 function isHookInSettings(): boolean {
   try {
-    if (!existsSync(CLAUDE_SETTINGS_PATH)) return false;
-    const content = readFileSync(CLAUDE_SETTINGS_PATH, 'utf-8');
-    const settings = JSON.parse(content);
-
-    if (!settings.hooks) return false;
+    const { hooks } = readClaudeSettings(getClaudeSettingsPath());
+    if (!isRecord(hooks)) return false;
 
     // Check if our hook is registered for all required types
     return HOOK_TYPES.every((hookType) => {
-      const hookArray = settings.hooks[hookType];
-      if (!Array.isArray(hookArray)) return false;
-      return hookArray.some(
-        (entry: { matcher?: string; hooks?: Array<{ command?: string }> }) =>
-          entry.matcher === HOOK_MATCHER &&
-          entry.hooks?.some((h) => h.command?.includes(HOOK_SCRIPT_NAME))
-      );
+      const entries = hooks[hookType];
+      return Array.isArray(entries) && entries.some(isOwnHookEntry);
     });
   } catch {
+    // Status checks treat an unreadable settings file as "not configured";
+    // install/uninstall surface the underlying error instead.
     return false;
   }
+}
+
+/**
+ * True for a settings entry that registers our script under our matcher.
+ */
+function isOwnHookEntry(entry: unknown): boolean {
+  if (!isRecord(entry) || entry.matcher !== HOOK_MATCHER || !Array.isArray(entry.hooks)) {
+    return false;
+  }
+  return entry.hooks.some(
+    (hook) => isRecord(hook) && commandReferencesScript(hook.command, HOOK_SCRIPT_NAME)
+  );
 }
 
 /**
  * Check if the hook script file exists.
  */
 export function isHookInstalled(): boolean {
-  return existsSync(HOOK_SCRIPT_PATH) && isHookInSettings();
+  return existsSync(getHookScriptPath()) && isHookInSettings();
 }
 
 /**
@@ -192,7 +221,8 @@ export function needsUpdate(): boolean {
  * Get comprehensive hook status.
  */
 export function getHooksStatus(): HookStatus {
-  const scriptExists = existsSync(HOOK_SCRIPT_PATH);
+  const scriptPath = getHookScriptPath();
+  const scriptExists = existsSync(scriptPath);
   const settingsConfigured = isHookInSettings();
   const installedVersion = scriptExists ? getHookVersion() : null;
   const packagedVersion = getPackagedHookVersion();
@@ -200,99 +230,83 @@ export function getHooksStatus(): HookStatus {
   return {
     installed: scriptExists && settingsConfigured,
     version: installedVersion,
-    path: HOOK_SCRIPT_PATH,
+    path: scriptPath,
     settingsConfigured,
     needsUpdate: scriptExists ? needsUpdate() : false,
     packagedVersion,
   };
 }
 
-/**
- * Read Claude Code settings.json, creating default if needed.
- */
-function readClaudeSettings(): Record<string, unknown> {
-  try {
-    if (existsSync(CLAUDE_SETTINGS_PATH)) {
-      const content = readFileSync(CLAUDE_SETTINGS_PATH, 'utf-8');
-      return JSON.parse(content);
-    }
-  } catch {
-    // Ignore parse errors, will create new settings
-  }
-  return {};
+function isOwnHookType(hookType: string): boolean {
+  return (HOOK_TYPES as readonly string[]).includes(hookType);
 }
 
 /**
- * Write Claude Code settings.json.
+ * Return settings with our hook registered once for every required hook type.
+ * Hooks belonging to the user are kept untouched.
  */
-function writeClaudeSettings(settings: Record<string, unknown>): void {
-  const dir = dirname(CLAUDE_SETTINGS_PATH);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
+function withOwnHooks(settings: ClaudeSettings): ClaudeSettings {
+  const existing = isRecord(settings.hooks) ? settings.hooks : {};
+  const ownEntry = {
+    matcher: HOOK_MATCHER,
+    hooks: [{ type: 'command', command: getHookCommand() }],
+  };
+
+  const installed = Object.fromEntries(
+    HOOK_TYPES.map((hookType) => {
+      const current = existing[hookType];
+      const entries = Array.isArray(current) ? current : [];
+      return [hookType, [...removeScriptHooks(entries, HOOK_SCRIPT_NAME), ownEntry]];
+    })
+  );
+
+  return { ...settings, hooks: { ...existing, ...installed } };
+}
+
+/**
+ * Return settings without our hook. Only commands that run our script are
+ * removed; hook types and the hooks object are dropped once they become empty.
+ */
+function withoutOwnHooks(settings: ClaudeSettings): ClaudeSettings {
+  if (!isRecord(settings.hooks)) return settings;
+
+  const remainingHooks = Object.entries(settings.hooks).flatMap(([hookType, entries]) => {
+    if (!isOwnHookType(hookType) || !Array.isArray(entries)) return [[hookType, entries]];
+    const remaining = removeScriptHooks(entries, HOOK_SCRIPT_NAME);
+    return remaining.length > 0 ? [[hookType, remaining]] : [];
+  });
+
+  if (remainingHooks.length > 0) {
+    return { ...settings, hooks: Object.fromEntries(remainingHooks) };
   }
-  writeFileSync(CLAUDE_SETTINGS_PATH, JSON.stringify(settings, null, 2));
+  const { hooks: _removedHooks, ...settingsWithoutHooks } = settings;
+  return settingsWithoutHooks;
 }
 
 /**
  * Install the hook: copy script and update Claude Code settings.
+ * Settings are read first so an unreadable settings.json aborts before any write.
  */
 export function installHook(): InstallResult {
   try {
-    // 1. Ensure hooks directory exists
-    if (!existsSync(HOOKS_DIR)) {
-      mkdirSync(HOOKS_DIR, { recursive: true });
-    }
-
-    // 2. Copy hook script
     const packagedPath = getPackagedHookPath();
     if (!existsSync(packagedPath)) {
       return { success: false, error: `Packaged hook not found at ${packagedPath}` };
     }
 
-    copyFileSync(packagedPath, HOOK_SCRIPT_PATH);
-    chmodSync(HOOK_SCRIPT_PATH, 0o755); // Make executable
+    const settingsPath = getClaudeSettingsPath();
+    const settings = readClaudeSettings(settingsPath);
 
-    // 3. Update Claude Code settings
-    const settings = readClaudeSettings();
-
-    // Ensure hooks object exists
-    if (!settings.hooks) {
-      settings.hooks = {};
+    const hooksDir = getHooksDir();
+    if (!existsSync(hooksDir)) {
+      mkdirSync(hooksDir, { recursive: true });
     }
 
-    const hooks = settings.hooks as Record<string, unknown[]>;
+    const scriptPath = getHookScriptPath();
+    copyFileSync(packagedPath, scriptPath);
+    chmodSync(scriptPath, 0o755); // Make executable
 
-    // Install hook for all required types (Stop, PermissionRequest, Notification)
-    for (const hookType of HOOK_TYPES) {
-      // Ensure array exists
-      if (!Array.isArray(hooks[hookType])) {
-        hooks[hookType] = [];
-      }
-
-      // Remove any existing 247 hook entries
-      hooks[hookType] = (
-        hooks[hookType] as Array<{
-          matcher?: string;
-          hooks?: Array<{ command?: string }>;
-        }>
-      ).filter(
-        (entry) =>
-          !(entry.matcher === HOOK_MATCHER && entry.hooks?.some((h) => h.command?.includes('247')))
-      );
-
-      // Add our hook
-      hooks[hookType].push({
-        matcher: HOOK_MATCHER,
-        hooks: [
-          {
-            type: 'command',
-            command: HOOK_COMMAND,
-          },
-        ],
-      });
-    }
-
-    writeClaudeSettings(settings);
+    writeClaudeSettings(settingsPath, withOwnHooks(settings));
 
     const installedVersion = getHookVersion();
     return { success: true, installedVersion: installedVersion || undefined };
@@ -307,47 +321,18 @@ export function installHook(): InstallResult {
 export function uninstallHook(removeScript: boolean = true): UninstallResult {
   try {
     // 1. Remove from Claude Code settings
-    if (existsSync(CLAUDE_SETTINGS_PATH)) {
-      const settings = readClaudeSettings();
-
-      if (settings.hooks) {
-        const hooks = settings.hooks as Record<string, unknown[]>;
-
-        // Remove from all hook types
-        for (const hookType of HOOK_TYPES) {
-          if (Array.isArray(hooks[hookType])) {
-            hooks[hookType] = (
-              hooks[hookType] as Array<{
-                matcher?: string;
-                hooks?: Array<{ command?: string }>;
-              }>
-            ).filter(
-              (entry) =>
-                !(
-                  entry.matcher === HOOK_MATCHER &&
-                  entry.hooks?.some((h) => h.command?.includes('247'))
-                )
-            );
-
-            // Clean up empty array
-            if (hooks[hookType].length === 0) {
-              delete hooks[hookType];
-            }
-          }
-        }
-
-        // Clean up empty hooks object
-        if (Object.keys(hooks).length === 0) {
-          delete settings.hooks;
-        }
-
-        writeClaudeSettings(settings);
+    const settingsPath = getClaudeSettingsPath();
+    if (existsSync(settingsPath)) {
+      const settings = readClaudeSettings(settingsPath);
+      if (isRecord(settings.hooks)) {
+        writeClaudeSettings(settingsPath, withoutOwnHooks(settings));
       }
     }
 
     // 2. Remove script file if requested
-    if (removeScript && existsSync(HOOK_SCRIPT_PATH)) {
-      unlinkSync(HOOK_SCRIPT_PATH);
+    const scriptPath = getHookScriptPath();
+    if (removeScript && existsSync(scriptPath)) {
+      unlinkSync(scriptPath);
     }
 
     return { success: true };
@@ -363,26 +348,29 @@ function getCodexNotifyLine(config: string): string | null {
 
 function readCodexConfig(): string | null {
   try {
-    if (!existsSync(CODEX_CONFIG_PATH)) return null;
-    return readFileSync(CODEX_CONFIG_PATH, 'utf-8');
+    const configPath = getCodexConfigPath();
+    if (!existsSync(configPath)) return null;
+    return readFileSync(configPath, 'utf-8');
   } catch {
     return null;
   }
 }
 
 function writeCodexConfig(content: string): void {
-  const dir = dirname(CODEX_CONFIG_PATH);
+  const configPath = getCodexConfigPath();
+  const dir = dirname(configPath);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
-  writeFileSync(CODEX_CONFIG_PATH, content);
+  writeFileSync(configPath, content);
 }
 
 export function getCodexNotifyStatus(): CodexNotifyStatus {
+  const configPath = getCodexConfigPath();
   const config = readCodexConfig();
   if (!config) {
     return {
-      configPath: CODEX_CONFIG_PATH,
+      configPath,
       configExists: false,
       notifyConfigured: false,
     };
@@ -392,7 +380,7 @@ export function getCodexNotifyStatus(): CodexNotifyStatus {
   const notifyConfigured = !!notifyLine && notifyLine.includes(HOOK_SCRIPT_NAME);
 
   return {
-    configPath: CODEX_CONFIG_PATH,
+    configPath,
     configExists: true,
     notifyConfigured,
     notifyLine: notifyLine || undefined,

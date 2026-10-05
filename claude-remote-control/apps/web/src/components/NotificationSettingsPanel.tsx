@@ -1,5 +1,6 @@
 'use client';
 
+import { useId } from 'react';
 import { Bell, Volume2, AlertCircle, CheckCircle, Play } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { usePushNotifications } from '@/hooks/usePushNotifications';
@@ -13,15 +14,18 @@ import { useSoundNotifications } from '@/hooks/useSoundNotifications';
 interface ToggleSwitchProps {
   enabled: boolean;
   onChange: () => void;
+  /** Accessible name: the switch has no visible text of its own */
+  label: string;
   disabled?: boolean;
 }
 
-function ToggleSwitch({ enabled, onChange, disabled }: ToggleSwitchProps) {
+function ToggleSwitch({ enabled, onChange, label, disabled }: ToggleSwitchProps) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={enabled}
+      aria-label={label}
       disabled={disabled}
       onClick={onChange}
       className={cn(
@@ -32,6 +36,7 @@ function ToggleSwitch({ enabled, onChange, disabled }: ToggleSwitchProps) {
       )}
     >
       <span
+        aria-hidden="true"
         className={cn(
           'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
           enabled ? 'translate-x-6' : 'translate-x-1'
@@ -61,6 +66,7 @@ export function NotificationSettingsPanel() {
   } = useNotificationPreferences();
 
   const { previewSound } = useSoundNotifications({ soundPath: getSelectedSoundPath() });
+  const soundListLabelId = useId();
 
   const handlePushToggle = async () => {
     if (isPushSubscribed) {
@@ -132,6 +138,7 @@ export function NotificationSettingsPanel() {
             </div>
           </div>
           <ToggleSwitch
+            label="Browser Notifications"
             enabled={isPushSubscribed}
             onChange={handlePushToggle}
             disabled={!isPushSupported || isPushLoading || pushPermission === 'denied'}
@@ -171,38 +178,53 @@ export function NotificationSettingsPanel() {
               </p>
             </div>
           </div>
-          <ToggleSwitch enabled={soundEnabled} onChange={handleSoundToggle} />
+          <ToggleSwitch
+            label="Sound Notifications"
+            enabled={soundEnabled}
+            onChange={handleSoundToggle}
+          />
         </div>
 
         {/* Sound Selector */}
         {soundEnabled && (
           <div className="mt-4 space-y-2">
-            <label className="text-sm font-medium text-white/70">Choose a sound</label>
-            <div className="grid grid-cols-2 gap-2">
+            <p id={soundListLabelId} className="text-sm font-medium text-white/70">
+              Choose a sound
+            </p>
+            <div role="group" aria-labelledby={soundListLabelId} className="grid grid-cols-2 gap-2">
               {NOTIFICATION_SOUNDS.map((sound) => (
-                <button
+                // Select and preview are siblings: a <button> cannot contain another button
+                <div
                   key={sound.id}
-                  onClick={() => handleSoundSelect(sound.id)}
                   className={cn(
-                    'flex items-center justify-between gap-2 rounded-lg px-3 py-2',
+                    'flex items-center justify-between gap-2 rounded-lg',
                     'border transition-colors',
                     selectedSound === sound.id
                       ? 'border-orange-500 bg-orange-500/10 text-white'
                       : 'border-white/10 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white'
                   )}
                 >
-                  <span className="text-sm">{sound.name}</span>
                   <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handlePreviewSound(sound.path);
-                    }}
-                    className={cn('rounded-full p-1', 'hover:bg-white/10', 'transition-colors')}
+                    type="button"
+                    onClick={() => handleSoundSelect(sound.id)}
+                    aria-pressed={selectedSound === sound.id}
+                    className="min-w-0 flex-1 rounded-lg py-2 pl-3 text-left text-sm"
+                  >
+                    {sound.name}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handlePreviewSound(sound.path)}
+                    className={cn(
+                      'mr-3 rounded-full p-1',
+                      'hover:bg-white/10',
+                      'transition-colors'
+                    )}
                     aria-label={`Preview ${sound.name} sound`}
                   >
-                    <Play className="h-3 w-3" />
+                    <Play className="h-3 w-3" aria-hidden="true" />
                   </button>
-                </button>
+                </div>
               ))}
             </div>
           </div>

@@ -10,12 +10,20 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
 pnpm install
 
-# Build agent
-cd "$PROJECT_ROOT/apps/agent"
-pnpm build
+# Build the agent together with the shared package it depends on
+pnpm turbo build --filter=247-agent
+
+NODE_BIN="$(command -v node)"
 
 # Create launchd plist for auto-start
 PLIST_PATH="$HOME/Library/LaunchAgents/com.quivr.247.plist"
+
+# "247 service install" manages the same plist; do not silently replace it
+if [ -f "$PLIST_PATH" ] && [ "${FORCE:-}" != "1" ]; then
+    echo "Error: $PLIST_PATH already exists (created by '247 service install' or an earlier run)."
+    echo "Remove it first, or re-run with FORCE=1 to overwrite."
+    exit 1
+fi
 
 cat > "$PLIST_PATH" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -26,7 +34,7 @@ cat > "$PLIST_PATH" << EOF
     <string>com.quivr.247</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/opt/homebrew/bin/node</string>
+        <string>$NODE_BIN</string>
         <string>$PROJECT_ROOT/apps/agent/dist/index.js</string>
     </array>
     <key>WorkingDirectory</key>

@@ -7,8 +7,7 @@ import type { DbSession, UpsertSessionInput } from './schema.js';
 export function getSession(name: string): DbSession | null {
   const db = getDatabase();
   const row = db.prepare('SELECT * FROM sessions WHERE name = ?').get(name) as
-    | DbSession
-    | undefined;
+    DbSession | undefined;
   return row ?? null;
 }
 
@@ -79,7 +78,11 @@ export function upsertSession(name: string, input: UpsertSessionInput): DbSessio
     lastStatusChange,
   });
 
-  return getSession(name)!;
+  const saved = getSession(name);
+  if (!saved) {
+    throw new Error(`Session '${name}' could not be read back after saving`);
+  }
+  return saved;
 }
 
 /**

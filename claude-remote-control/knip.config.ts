@@ -10,15 +10,7 @@ const config: KnipConfig = {
       entry: ['src/server.ts', 'tests/**/*.test.ts'],
       project: ['src/**/*.ts', 'tests/**/*.ts'],
       // pino-pretty: Used at runtime via dynamic require
-      // http-proxy, web-push: Used in routes
-      ignoreDependencies: [
-        'pino-pretty',
-        'http-proxy',
-        'web-push',
-        'execa',
-        '@types/http-proxy',
-        '@types/web-push',
-      ],
+      ignoreDependencies: ['pino-pretty'],
     },
     'apps/web': {
       entry: [
@@ -38,24 +30,12 @@ const config: KnipConfig = {
       entry: ['tests/**/*.test.ts'],
       project: ['src/**/*.ts', 'tests/**/*.ts'],
       // Agent dependencies bundled into CLI
-      ignoreDependencies: [
-        'express',
-        'ws',
-        'cors',
-        'http-proxy',
-        'pino',
-        'pino-pretty',
-        'web-push',
-        'fs-extra',
-        '@types/fs-extra',
-        '@types/web-push',
-      ],
+      ignoreDependencies: ['express', 'ws', 'cors', 'pino', 'pino-pretty'],
     },
   },
-  ignore: ['vitest.workspace.ts'],
   ignoreExportsUsedInFile: true,
   // Root-level dev dependencies that are tooling
-  ignoreDependencies: ['husky', 'lint-staged', '@vitest/coverage-v8'],
+  ignoreDependencies: ['lint-staged'],
   // Disable vitest plugin at root - each workspace has its own vitest config
   vitest: false,
   // Ignore intentional duplicate exports (aliases like checkNode = checkNodeVersion)

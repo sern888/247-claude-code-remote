@@ -1,3 +1,4 @@
+/* eslint-disable no-console -- this test prints a human-readable duplication report for the operator */
 import { describe, it, expect } from 'vitest';
 import { execSync } from 'child_process';
 import { existsSync, readFileSync, mkdirSync, rmSync } from 'fs';

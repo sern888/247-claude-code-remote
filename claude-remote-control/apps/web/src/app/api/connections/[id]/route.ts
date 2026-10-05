@@ -1,58 +1,71 @@
 import { NextResponse } from 'next/server';
 import { db, agentConnection } from '@/lib/db';
 import { eq, and } from 'drizzle-orm';
+import { getAuthenticatedUserId } from '../../_lib/auth';
+import { jsonError, readJsonObject } from '../../_lib/request';
+import { parseConnectionUpdate } from '../validation';
 
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+interface RouteContext {
+  params: Promise<{ id: string }>;
+}
+
+export async function DELETE(_req: Request, { params }: RouteContext) {
   try {
-    const { neonAuth } = await import('@neondatabase/auth/next/server');
-    const { user } = await neonAuth();
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const userId = await getAuthenticatedUserId();
+    if (!userId) {
+      return jsonError('Unauthorized', 401);
     }
 
     const { id } = await params;
 
-    await db
+    const deleted = await db
       .delete(agentConnection)
-      .where(and(eq(agentConnection.id, id), eq(agentConnection.userId, user.id)));
+      .where(and(eq(agentConnection.id, id), eq(agentConnection.userId, userId)))
+      .returning({ id: agentConnection.id });
+
+    if (deleted.length === 0) {
+      return jsonError('Connection not found', 404);
+    }
 
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Error deleting connection:', error);
-    return NextResponse.json({ error: 'Failed to delete connection' }, { status: 500 });
+    return jsonError('Failed to delete connection', 500);
   }
 }
 
-export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function PUT(req: Request, { params }: RouteContext) {
   try {
-    const { neonAuth } = await import('@neondatabase/auth/next/server');
-    const { user } = await neonAuth();
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const userId = await getAuthenticatedUserId();
+    if (!userId) {
+      return jsonError('Unauthorized', 401);
+    }
+
+    const body = await readJsonObject(req);
+    if (!body) {
+      return jsonError('Request body must be a JSON object', 400);
+    }
+
+    const update = parseConnectionUpdate(body);
+    if (!update.ok) {
+      return jsonError(update.error, 400);
     }
 
     const { id } = await params;
-    const body = await req.json();
 
     const [connection] = await db
       .update(agentConnection)
-      .set({
-        name: body.name,
-        url: body.url,
-        method: body.method,
-        color: body.color,
-        updatedAt: new Date(),
-      })
-      .where(and(eq(agentConnection.id, id), eq(agentConnection.userId, user.id)))
+      .set({ ...update.value, updatedAt: new Date() })
+      .where(and(eq(agentConnection.id, id), eq(agentConnection.userId, userId)))
       .returning();
 
     if (!connection) {
-      return NextResponse.json({ error: 'Connection not found' }, { status: 404 });
+      return jsonError('Connection not found', 404);
     }
 
     return NextResponse.json(connection);
   } catch (error) {
     console.error('Error updating connection:', error);
-    return NextResponse.json({ error: 'Failed to update connection' }, { status: 500 });
+    return jsonError('Failed to update connection', 500);
   }
 }

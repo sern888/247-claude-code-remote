@@ -13,8 +13,13 @@ import type {
 import * as sessionsDb from '../db/sessions.js';
 import { broadcastStatusUpdate } from '../websocket-handlers.js';
 import { loadConfig } from '../config.js';
+import { logger } from '../logger.js';
+import { isValidSessionName } from '../lib/validation.js';
 
 const WEB_PUSH_URL = 'https://247.quivr.com/api/push/notify';
+const PUSH_TIMEOUT_MS = 5000;
+const MAX_EVENT_TYPE_LENGTH = 100;
+const MAX_ATTENTION_REASON_LENGTH = 200;
 
 /**
  * Send push notification to web API
@@ -33,6 +38,7 @@ async function sendPushNotification(sessionName: string): Promise<void> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ machineId, sessionName }),
+      signal: AbortSignal.timeout(PUSH_TIMEOUT_MS),
     });
 
     if (!response.ok) {
@@ -43,9 +49,9 @@ async function sendPushNotification(sessionName: string): Promise<void> {
 
     const result = await response.json();
     console.log(`[Hooks] Push notification: ${result.sent} sent`);
-  } catch (_err) {
-    // Don't log full error to avoid noise - push is best effort
-    console.log('[Hooks] Push notification skipped (web unreachable)');
+  } catch (err) {
+    // Push is best effort, but a failure should still be diagnosable
+    logger.hooks.warn({ err }, 'Push notification skipped (web unreachable)');
   }
 }
 
@@ -61,7 +67,16 @@ function isValidStatus(value: unknown): value is SessionStatus {
  */
 function isValidAttentionReason(value: unknown): value is AttentionReason {
   // Accept any string, null, or undefined (pass-through from Claude Code notification_type)
-  return typeof value === 'string' || value === null || value === undefined;
+  if (value === null || value === undefined) {
+    return true;
+  }
+  return typeof value === 'string' && value.length <= MAX_ATTENTION_REASON_LENGTH;
+}
+
+function isValidEventType(value: unknown): boolean {
+  return (
+    value === undefined || (typeof value === 'string' && value.length <= MAX_EVENT_TYPE_LENGTH)
+  );
 }
 
 /**
@@ -88,11 +103,20 @@ export function createHooksRoutes(): Router {
    */
   router.post('/status', async (req, res) => {
     try {
-      const notification = req.body as AttentionNotification;
+      const notification = (req.body ?? {}) as AttentionNotification;
 
       // Validate required fields
       if (!notification.sessionId || typeof notification.sessionId !== 'string') {
         return res.status(400).json({ error: 'sessionId is required' });
+      }
+
+      // The id is a tmux session name; it is stored and shown in notifications
+      if (!isValidSessionName(notification.sessionId)) {
+        return res.status(400).json({ error: 'Invalid sessionId' });
+      }
+
+      if (!isValidEventType(notification.eventType)) {
+        return res.status(400).json({ error: 'Invalid eventType value' });
       }
 
       if (!isValidStatus(notification.status)) {
@@ -157,8 +181,8 @@ export function createHooksRoutes(): Router {
 
       // Send push notification if needs_attention
       if (notification.status === 'needs_attention') {
-        // Fire and forget - don't block the response
-        sendPushNotification(sessionName).catch(() => {});
+        // Fire and forget - don't block the response (it handles its own errors)
+        void sendPushNotification(sessionName);
       }
 
       res.json({

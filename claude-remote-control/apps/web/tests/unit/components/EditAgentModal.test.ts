@@ -32,9 +32,7 @@ describe('EditAgentModal', () => {
     });
 
     it('should have correct hex values for each color', () => {
-      const colorMap = Object.fromEntries(
-        AGENT_COLORS.map((c) => [c.name, c.hex])
-      );
+      const colorMap = Object.fromEntries(AGENT_COLORS.map((c) => [c.name, c.hex]));
       expect(colorMap['Orange']).toBe('#f97316');
       expect(colorMap['Amber']).toBe('#f59e0b');
       expect(colorMap['Emerald']).toBe('#10b981');
@@ -46,11 +44,15 @@ describe('EditAgentModal', () => {
   });
 
   describe('Component behavior', () => {
-    let mockOnSave: ReturnType<typeof vi.fn<(id: string, data: { name: string; color?: string }) => Promise<void>>>;
+    let mockOnSave: ReturnType<
+      typeof vi.fn<(id: string, data: { name: string; color?: string }) => Promise<void>>
+    >;
     let mockOnClose: ReturnType<typeof vi.fn>;
 
     beforeEach(() => {
-      mockOnSave = vi.fn<(id: string, data: { name: string; color?: string }) => Promise<void>>().mockResolvedValue(undefined);
+      mockOnSave = vi
+        .fn<(id: string, data: { name: string; color?: string }) => Promise<void>>()
+        .mockResolvedValue(undefined);
       mockOnClose = vi.fn();
     });
 

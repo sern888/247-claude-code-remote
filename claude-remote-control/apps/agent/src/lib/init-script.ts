@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { execSync } from 'child_process';
+import { isValidSessionName } from './validation.js';
 
 export interface InitScriptOptions {
   sessionName: string;
@@ -533,6 +534,10 @@ function escapeForBash(value: string): string {
  * @returns The path to the created script file.
  */
 export function writeInitScript(sessionName: string, content: string): string {
+  // The name becomes part of a file path
+  if (!isValidSessionName(sessionName)) {
+    throw new Error('Invalid session name');
+  }
   const scriptPath = path.join(os.tmpdir(), `247-init-${sessionName}.sh`);
   fs.writeFileSync(scriptPath, content, { mode: 0o755 });
   return scriptPath;

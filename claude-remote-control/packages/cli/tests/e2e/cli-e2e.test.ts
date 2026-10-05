@@ -169,26 +169,27 @@ describe.skipIf(skipE2E)('247 CLI E2E Tests', () => {
   });
 
   describe('hooks command', () => {
-    it('shows statusLine API status after init', async () => {
+    it('shows the hooks status report after init', async () => {
       const port = await getFreePort();
       await env.runCli(['init', '--name', 'hooks-test', '--port', String(port)]);
 
       const result = await env.runCli(['hooks', 'status']);
 
-      // New statusLine-based system shows this message
-      expect(result.stdout).toContain('Using new statusLine API');
+      expect(result.stdout).toContain('247 Hooks Status');
+      expect(result.stdout).toContain('Claude Code Settings:');
     });
 
-    it('shows deprecation warning on hooks install', async () => {
+    it('installs the notification hook and reports it as installed', async () => {
       const port = await getFreePort();
       await env.runCli(['init', '--name', 'hooks-test', '--port', String(port)]);
 
-      const installResult = await env.runCli(['hooks', 'install']);
-      // hooks install now shows deprecation warning
-      expect(installResult.stdout).toContain('deprecated');
+      // --force so the outcome does not depend on whether init already installed it
+      const installResult = await env.runCli(['hooks', 'install', '--force']);
+      expect(installResult.stdout).toContain('Claude Code will now notify 247');
 
       const statusResult = await env.runCli(['hooks', 'status']);
-      expect(statusResult.stdout).toContain('Using new statusLine API');
+      expect(statusResult.stdout).toContain('Hooks installed');
+      expect(statusResult.stdout).toContain('Notification hook registered');
     });
   });
 

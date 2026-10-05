@@ -60,6 +60,61 @@ describe('CLI Config', () => {
       const { getProfilePath } = await import('../../src/lib/config.js');
       expect(getProfilePath('dev')).toBe('/mock/.247/profiles/dev.json');
     });
+
+    it.each(['../../etc/passwd', 'a/b', 'has space', '-leading-dash', '.hidden', 'a'.repeat(65)])(
+      'rejects unsafe profile name %j',
+      async (name) => {
+        const { getProfilePath } = await import('../../src/lib/config.js');
+        expect(() => getProfilePath(name)).toThrow('Invalid profile name');
+      }
+    );
+
+    it.each(['dev', 'Prod_2', 'my-profile', '0', 'a'.repeat(64)])(
+      'accepts safe profile name %j',
+      async (name) => {
+        const { getProfilePath } = await import('../../src/lib/config.js');
+        expect(getProfilePath(name)).toBe(`/mock/.247/profiles/${name}.json`);
+      }
+    );
+  });
+
+  describe('getProfileNameError', () => {
+    it('returns null for the default profile and valid names', async () => {
+      const { getProfileNameError } = await import('../../src/lib/config.js');
+      expect(getProfileNameError(undefined)).toBeNull();
+      expect(getProfileNameError(null)).toBeNull();
+      expect(getProfileNameError('default')).toBeNull();
+      expect(getProfileNameError('dev')).toBeNull();
+    });
+
+    it('returns a clear message naming the rejected value', async () => {
+      const { getProfileNameError } = await import('../../src/lib/config.js');
+      expect(getProfileNameError('../evil')).toContain("Invalid profile name '../evil'");
+    });
+  });
+
+  describe('parsePort', () => {
+    it.each([
+      ['1', 1],
+      ['4678', 4678],
+      ['65535', 65535],
+    ])('parses %j', async (value, expected) => {
+      const { parsePort } = await import('../../src/lib/config.js');
+      expect(parsePort(value)).toBe(expected);
+    });
+
+    it.each(['abc', '', '0', '65536', '-1', '80.5', '80abc', ' 80', '1e3'])(
+      'rejects %j with a clear message',
+      async (value) => {
+        const { parsePort } = await import('../../src/lib/config.js');
+        expect(() => parsePort(value)).toThrow('must be an integer between 1 and 65535');
+      }
+    );
+
+    it('names the source of the invalid value', async () => {
+      const { parsePort } = await import('../../src/lib/config.js');
+      expect(() => parsePort('abc', 'AGENT_247_PORT')).toThrow("Invalid AGENT_247_PORT 'abc'");
+    });
   });
 
   describe('loadConfig', () => {
@@ -115,6 +170,61 @@ describe('CLI Config', () => {
 
       const { loadConfig } = await import('../../src/lib/config.js');
       expect(loadConfig()).toBeNull();
+    });
+
+    it('returns null and reports a non-numeric AGENT_247_PORT override', async () => {
+      process.env.AGENT_247_PORT = 'not-a-port';
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const { existsSync, readFileSync } = await import('fs');
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(JSON.stringify(validConfig));
+
+      const { loadConfig } = await import('../../src/lib/config.js');
+
+      expect(loadConfig()).toBeNull();
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('AGENT_247_PORT'));
+      errorSpy.mockRestore();
+    });
+
+    it('returns null and reports an invalid stored port', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const { existsSync, readFileSync } = await import('fs');
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(
+        JSON.stringify({ ...validConfig, agent: { port: null } })
+      );
+
+      const { loadConfig } = await import('../../src/lib/config.js');
+
+      expect(loadConfig()).toBeNull();
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('agent.port'));
+      errorSpy.mockRestore();
+    });
+
+    it('does not mutate or persist env overrides into the stored config', async () => {
+      process.env.AGENT_247_PORT = '5000';
+      process.env.AGENT_247_PROJECTS = '/custom/projects';
+
+      const { existsSync, readFileSync } = await import('fs');
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(JSON.stringify(validConfig));
+
+      const { loadConfig, loadStoredConfig } = await import('../../src/lib/config.js');
+
+      expect(loadConfig()?.agent.port).toBe(5000);
+      expect(loadStoredConfig()).toEqual(validConfig);
+    });
+  });
+
+  describe('loadStoredConfig', () => {
+    it('returns null if config file does not exist', async () => {
+      const { existsSync } = await import('fs');
+      vi.mocked(existsSync).mockReturnValue(false);
+
+      const { loadStoredConfig } = await import('../../src/lib/config.js');
+      expect(loadStoredConfig('dev')).toBeNull();
     });
   });
 
@@ -181,6 +291,16 @@ describe('CLI Config', () => {
       expect(profiles).toContain('dev');
       expect(profiles).toContain('prod');
     });
+
+    it('skips files whose names are not valid profile names', async () => {
+      const { existsSync, readdirSync } = await import('fs');
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readdirSync).mockReturnValue(['dev.json', 'bad name.json', 'notes.txt'] as any);
+
+      const { listProfiles } = await import('../../src/lib/config.js');
+
+      expect(listProfiles()).toEqual(['default', 'dev']);
+    });
   });
 
   describe('profileExists', () => {
@@ -246,6 +366,34 @@ describe('CLI Config', () => {
 
       expect(config.agent.port).toBe(5000);
       expect(config.projects.basePath).toBe('/custom/path');
+    });
+  });
+
+  describe('copyConfigForNewProfile', () => {
+    const source = {
+      machine: { id: 'source-id', name: 'Source Machine' },
+      agent: { port: 4678 },
+      projects: { basePath: '~/Work', whitelist: ['a'] },
+    };
+
+    it('gives the copy a fresh machine id and the requested port', async () => {
+      const { copyConfigForNewProfile } = await import('../../src/lib/config.js');
+
+      const copy = copyConfigForNewProfile(source, { port: 4700 });
+
+      expect(copy.machine).toEqual({ id: 'test-uuid-1234', name: 'Source Machine' });
+      expect(copy.agent.port).toBe(4700);
+      expect(copy.projects).toEqual(source.projects);
+    });
+
+    it('uses the provided machine name and leaves the source untouched', async () => {
+      const { copyConfigForNewProfile } = await import('../../src/lib/config.js');
+      const snapshot = JSON.parse(JSON.stringify(source));
+
+      const copy = copyConfigForNewProfile(source, { port: 4700, machineName: 'Copy' });
+
+      expect(copy.machine.name).toBe('Copy');
+      expect(source).toEqual(snapshot);
     });
   });
 

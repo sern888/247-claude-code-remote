@@ -3,6 +3,7 @@
 import { useEffect, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { deeplinkLogger } from '@/lib/logger';
+import { getServiceWorkerRegistration } from '@/lib/service-worker';
 
 /**
  * Hook to handle notification deep links on iOS PWA
@@ -21,7 +22,10 @@ export function useNotificationDeeplink() {
   useEffect(() => {
     const handleFocus = () => {
       if ('clearAppBadge' in navigator) {
-        (navigator as Navigator & { clearAppBadge: () => Promise<void> }).clearAppBadge();
+        navigator.clearAppBadge().catch((error: unknown) => {
+          // Badging is best effort: it is not available in every context (e.g. not installed)
+          deeplinkLogger.debug('Could not clear app badge', { error: String(error) });
+        });
       }
     };
 
@@ -83,14 +87,24 @@ export function useNotificationDeeplink() {
 
     navigator.serviceWorker.addEventListener('message', handleMessage);
 
+    // Set on cleanup: once the listener is gone nobody could receive the worker's answer,
+    // and asking would still consume the single-use deeplink
+    let cancelled = false;
+
     // Check for pending deeplink on mount (iOS fallback)
     const checkPendingDeeplink = async () => {
       try {
-        const registration = await navigator.serviceWorker.ready;
-        if (registration.active) {
-          deeplinkLogger.info('Checking for pending deeplink...');
-          registration.active.postMessage({ type: 'CHECK_NOTIFICATION_DEEPLINK' });
+        const registration = await getServiceWorkerRegistration();
+        if (cancelled) {
+          return;
         }
+        if (!registration?.active) {
+          // No active service worker: there cannot be a pending deeplink
+          deeplinkLogger.info('No active service worker, skipping deeplink check');
+          return;
+        }
+        deeplinkLogger.info('Checking for pending deeplink...');
+        registration.active.postMessage({ type: 'CHECK_NOTIFICATION_DEEPLINK' });
       } catch (e) {
         deeplinkLogger.error('Failed to check pending deeplink', e);
       }
@@ -100,28 +114,11 @@ export function useNotificationDeeplink() {
     const timeoutId = setTimeout(checkPendingDeeplink, 500);
 
     return () => {
+      cancelled = true;
       navigator.serviceWorker.removeEventListener('message', handleMessage);
       clearTimeout(timeoutId);
     };
   }, [handleDeeplink]);
-
-  // Clear app badge when window gains focus
-  useEffect(() => {
-    const handleFocus = () => {
-      if ('clearAppBadge' in navigator) {
-        (navigator as Navigator & { clearAppBadge: () => Promise<void> }).clearAppBadge();
-      }
-    };
-
-    window.addEventListener('focus', handleFocus);
-
-    // Also clear on mount if already focused
-    if (document.hasFocus()) {
-      handleFocus();
-    }
-
-    return () => window.removeEventListener('focus', handleFocus);
-  }, []);
 
   // Also handle URL params if we have machine/session in the URL
   // This handles the case where the deeplink worked via openWindow

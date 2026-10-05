@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useId, type CSSProperties } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Check, Pencil } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useEscapeKey } from '@/components/ui/SlideOverPanel';
 
 // Predefined color palette
 export const AGENT_COLORS = [
@@ -37,6 +38,11 @@ export function EditAgentModal({
   const [selectedColor, setSelectedColor] = useState<string | undefined>(agentColor);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const titleId = useId();
+  const nameInputId = useId();
+  const colorLabelId = useId();
+
+  useEscapeKey(open, onClose);
 
   // Reset state when modal opens with new data
   useEffect(() => {
@@ -77,10 +83,14 @@ export function EditAgentModal({
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm"
             onClick={onClose}
+            aria-hidden="true"
           />
 
           {/* Modal */}
           <motion.div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={titleId}
             initial={{ opacity: 0, scale: 0.95, y: 20 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 20 }}
@@ -92,15 +102,19 @@ export function EditAgentModal({
               <div className="flex items-center justify-between border-b border-white/5 px-6 py-4">
                 <div className="flex items-center gap-3">
                   <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/10">
-                    <Pencil className="h-4 w-4 text-white/70" />
+                    <Pencil className="h-4 w-4 text-white/70" aria-hidden="true" />
                   </div>
-                  <h2 className="text-lg font-semibold text-white">Edit Machine</h2>
+                  <h2 id={titleId} className="text-lg font-semibold text-white">
+                    Edit Machine
+                  </h2>
                 </div>
                 <button
+                  type="button"
                   onClick={onClose}
+                  aria-label="Close edit machine dialog"
                   className="rounded-lg p-2 text-white/40 transition-colors hover:bg-white/5 hover:text-white"
                 >
-                  <X className="h-5 w-5" />
+                  <X className="h-5 w-5" aria-hidden="true" />
                 </button>
               </div>
 
@@ -108,10 +122,14 @@ export function EditAgentModal({
               <div className="space-y-6 p-6">
                 {/* Name input */}
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-white/70">
+                  <label
+                    htmlFor={nameInputId}
+                    className="mb-2 block text-sm font-medium text-white/70"
+                  >
                     Machine Name
                   </label>
                   <input
+                    id={nameInputId}
                     type="text"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
@@ -127,13 +145,16 @@ export function EditAgentModal({
                 </div>
 
                 {/* Color picker */}
-                <div>
-                  <label className="mb-3 block text-sm font-medium text-white/70">
+                <div role="group" aria-labelledby={colorLabelId}>
+                  <span id={colorLabelId} className="mb-3 block text-sm font-medium text-white/70">
                     Color
-                  </label>
+                  </span>
                   <div className="flex flex-wrap gap-3">
                     {/* No color option */}
                     <button
+                      type="button"
+                      aria-label="No color"
+                      aria-pressed={selectedColor === undefined}
                       onClick={() => setSelectedColor(undefined)}
                       className={cn(
                         'relative flex h-10 w-10 items-center justify-center rounded-full border-2 transition-all',
@@ -145,7 +166,7 @@ export function EditAgentModal({
                     >
                       <div className="h-6 w-6 rounded-full bg-gradient-to-br from-white/10 to-white/5" />
                       {selectedColor === undefined && (
-                        <Check className="absolute h-4 w-4 text-white" />
+                        <Check className="absolute h-4 w-4 text-white" aria-hidden="true" />
                       )}
                     </button>
 
@@ -153,6 +174,9 @@ export function EditAgentModal({
                     {AGENT_COLORS.map((color) => (
                       <button
                         key={color.hex}
+                        type="button"
+                        aria-label={color.name}
+                        aria-pressed={selectedColor === color.hex}
                         onClick={() => setSelectedColor(color.hex)}
                         className={cn(
                           'relative flex h-10 w-10 items-center justify-center rounded-full border-2 transition-all',
@@ -160,16 +184,18 @@ export function EditAgentModal({
                             ? 'ring-2 ring-offset-2 ring-offset-[#12121a]'
                             : 'border-transparent hover:scale-110'
                         )}
-                        style={{
-                          backgroundColor: color.hex,
-                          borderColor: selectedColor === color.hex ? color.hex : 'transparent',
-                          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                          ['--tw-ring-color' as any]: selectedColor === color.hex ? `${color.hex}50` : undefined,
-                        }}
+                        style={
+                          {
+                            backgroundColor: color.hex,
+                            borderColor: selectedColor === color.hex ? color.hex : 'transparent',
+                            '--tw-ring-color':
+                              selectedColor === color.hex ? `${color.hex}50` : undefined,
+                          } as CSSProperties
+                        }
                         title={color.name}
                       >
                         {selectedColor === color.hex && (
-                          <Check className="h-4 w-4 text-white drop-shadow-md" />
+                          <Check className="h-4 w-4 text-white drop-shadow-md" aria-hidden="true" />
                         )}
                       </button>
                     ))}

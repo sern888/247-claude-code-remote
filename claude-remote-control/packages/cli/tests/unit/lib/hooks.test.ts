@@ -414,4 +414,181 @@ describe('Hooks Utility', () => {
       expect(writtenSettings.hooks).toBeUndefined();
     });
   });
+
+  describe('settings.json safety', () => {
+    const BACKUP_PATH = `${CLAUDE_SETTINGS_PATH}.247-backup`;
+    const ownEntry = {
+      matcher: '*',
+      hooks: [{ type: 'command', command: 'bash ~/.247/hooks/notify-247.sh' }],
+    };
+    const userEntry = {
+      matcher: '*',
+      hooks: [{ type: 'command', command: 'bash /opt/tools/deploy-247.sh' }],
+    };
+
+    const mockSettingsContent = async (settingsContent: string) => {
+      const { readFileSync } = await import('fs');
+      vi.mocked(readFileSync).mockImplementation((path) => {
+        const pathStr = String(path);
+        if (pathStr.includes('settings.json')) return settingsContent;
+        if (pathStr.includes('notify-247.sh')) return '#!/bin/bash\n# VERSION: 2.25.0';
+        return '';
+      });
+    };
+
+    const findSettingsWrite = async () => {
+      const { writeFileSync } = await import('fs');
+      return vi.mocked(writeFileSync).mock.calls.find((call) => call[0] === CLAUDE_SETTINGS_PATH);
+    };
+
+    it('installHook fails without writing when settings.json is not valid JSON', async () => {
+      const { existsSync, writeFileSync, copyFileSync } = await import('fs');
+      vi.mocked(existsSync).mockReturnValue(true);
+      await mockSettingsContent('{ "hooks": { broken');
+
+      const { installHook } = await import('../../../src/lib/hooks.js');
+      const result = installHook();
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain(CLAUDE_SETTINGS_PATH);
+      expect(result.error).toContain('is not valid JSON; fix or remove it');
+      expect(writeFileSync).not.toHaveBeenCalled();
+      expect(copyFileSync).not.toHaveBeenCalled();
+    });
+
+    it('installHook fails without writing when settings.json is not a JSON object', async () => {
+      const { existsSync, writeFileSync } = await import('fs');
+      vi.mocked(existsSync).mockReturnValue(true);
+      await mockSettingsContent('["not", "an", "object"]');
+
+      const { installHook } = await import('../../../src/lib/hooks.js');
+      const result = installHook();
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain(CLAUDE_SETTINGS_PATH);
+      expect(writeFileSync).not.toHaveBeenCalled();
+    });
+
+    it('uninstallHook fails without writing or deleting when settings.json is not valid JSON', async () => {
+      const { existsSync, writeFileSync, unlinkSync } = await import('fs');
+      vi.mocked(existsSync).mockReturnValue(true);
+      await mockSettingsContent('not json at all');
+
+      const { uninstallHook } = await import('../../../src/lib/hooks.js');
+      const result = uninstallHook(true);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('is not valid JSON; fix or remove it');
+      expect(writeFileSync).not.toHaveBeenCalled();
+      expect(unlinkSync).not.toHaveBeenCalled();
+    });
+
+    it('backs up an existing settings.json before the first write', async () => {
+      const { existsSync, copyFileSync } = await import('fs');
+      vi.mocked(existsSync).mockImplementation((path) => String(path) !== BACKUP_PATH);
+      await mockSettingsContent(JSON.stringify({ model: 'opus' }));
+
+      const { installHook } = await import('../../../src/lib/hooks.js');
+      const result = installHook();
+
+      expect(result.success).toBe(true);
+      expect(copyFileSync).toHaveBeenCalledWith(CLAUDE_SETTINGS_PATH, BACKUP_PATH);
+    });
+
+    it('does not overwrite an existing backup', async () => {
+      const { existsSync, copyFileSync } = await import('fs');
+      vi.mocked(existsSync).mockReturnValue(true);
+      await mockSettingsContent(JSON.stringify({ model: 'opus' }));
+
+      const { installHook } = await import('../../../src/lib/hooks.js');
+      installHook();
+
+      expect(copyFileSync).not.toHaveBeenCalledWith(CLAUDE_SETTINGS_PATH, BACKUP_PATH);
+    });
+
+    it('does not create a backup when settings.json does not exist yet', async () => {
+      const { existsSync, copyFileSync } = await import('fs');
+      vi.mocked(existsSync).mockImplementation((path) => {
+        const pathStr = String(path);
+        return pathStr.includes('notify-247.sh') || pathStr.includes('pnpm-workspace.yaml');
+      });
+      await mockSettingsContent('{}');
+
+      const { installHook } = await import('../../../src/lib/hooks.js');
+      const result = installHook();
+
+      expect(result.success).toBe(true);
+      expect(copyFileSync).not.toHaveBeenCalledWith(CLAUDE_SETTINGS_PATH, BACKUP_PATH);
+      expect(await findSettingsWrite()).toBeDefined();
+    });
+
+    it('installHook keeps user hooks whose command merely contains "247"', async () => {
+      const { existsSync } = await import('fs');
+      vi.mocked(existsSync).mockReturnValue(true);
+      await mockSettingsContent(JSON.stringify({ hooks: { Stop: [userEntry, ownEntry] } }));
+
+      const { installHook } = await import('../../../src/lib/hooks.js');
+      installHook();
+
+      const written = JSON.parse((await findSettingsWrite())![1] as string);
+      const commands = written.hooks.Stop.flatMap((entry: { hooks: Array<{ command: string }> }) =>
+        entry.hooks.map((hook) => hook.command)
+      );
+      expect(commands).toContain('bash /opt/tools/deploy-247.sh');
+      expect(commands.filter((command: string) => command.includes('notify-247.sh'))).toEqual([
+        `bash ${HOOK_SCRIPT_PATH}`,
+      ]);
+    });
+
+    it('uninstallHook keeps user hooks whose command merely contains "247"', async () => {
+      const { existsSync } = await import('fs');
+      vi.mocked(existsSync).mockReturnValue(true);
+      await mockSettingsContent(
+        JSON.stringify({ hooks: { Stop: [userEntry, ownEntry], Notification: [ownEntry] } })
+      );
+
+      const { uninstallHook } = await import('../../../src/lib/hooks.js');
+      const result = uninstallHook(false);
+
+      expect(result.success).toBe(true);
+      const written = JSON.parse((await findSettingsWrite())![1] as string);
+      expect(written.hooks).toEqual({ Stop: [userEntry] });
+    });
+
+    it('uninstallHook removes only its own command from a shared matcher entry', async () => {
+      const { existsSync } = await import('fs');
+      vi.mocked(existsSync).mockReturnValue(true);
+      const sharedEntry = {
+        matcher: '*',
+        hooks: [...ownEntry.hooks, { type: 'command', command: 'say done' }],
+      };
+      await mockSettingsContent(JSON.stringify({ hooks: { Stop: [sharedEntry] } }));
+
+      const { uninstallHook } = await import('../../../src/lib/hooks.js');
+      uninstallHook(false);
+
+      const written = JSON.parse((await findSettingsWrite())![1] as string);
+      expect(written.hooks.Stop).toEqual([
+        { matcher: '*', hooks: [{ type: 'command', command: 'say done' }] },
+      ]);
+    });
+  });
+
+  describe('home directory resolution', () => {
+    afterEach(() => {
+      delete process.env.AGENT_247_HOME;
+    });
+
+    it('resolves hook paths through AGENT_247_HOME when set', async () => {
+      process.env.AGENT_247_HOME = '/tmp/isolated-home';
+      const { existsSync, readFileSync } = await import('fs');
+      vi.mocked(existsSync).mockReturnValue(false);
+      vi.mocked(readFileSync).mockReturnValue('');
+
+      const { getHooksStatus, getCodexNotifyStatus } = await import('../../../src/lib/hooks.js');
+
+      expect(getHooksStatus().path).toBe('/tmp/isolated-home/.247/hooks/notify-247.sh');
+      expect(getCodexNotifyStatus().configPath).toBe('/tmp/isolated-home/.codex/config.toml');
+    });
+  });
 });

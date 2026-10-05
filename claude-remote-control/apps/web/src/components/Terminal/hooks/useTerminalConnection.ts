@@ -14,7 +14,7 @@ import {
   WS_PONG_TIMEOUT,
   WS_ACTIVITY_PAUSE,
 } from '../constants';
-import { buildWebSocketUrl } from '@/lib/utils';
+import { buildSessionAcknowledgeUrl, buildWebSocketUrl } from '@/lib/utils';
 import { terminalLogger } from '@/lib/logger';
 
 interface UseTerminalConnectionProps {
@@ -122,6 +122,11 @@ export function useTerminalConnection({
 
     // Reset acknowledge flag for new session
     hasAcknowledgedRef.current = false;
+
+    // The previous cleanup (Strict Mode remount, or a new agentUrl/session) marked the
+    // close as intentional. This run owns a fresh connection, so auto-reconnect and
+    // pong-timeout recovery must work again.
+    intentionalCloseRef.current = false;
 
     let cancelled = false;
     let term: XTerm | null = null;
@@ -524,7 +529,7 @@ export function useTerminalConnection({
           // Acknowledge session on first input (reset needs_attention)
           if (!hasAcknowledgedRef.current && sessionName && agentUrl) {
             hasAcknowledgedRef.current = true;
-            fetch(`${agentUrl}/api/sessions/${sessionName}/acknowledge`, {
+            fetch(buildSessionAcknowledgeUrl(agentUrl, sessionName), {
               method: 'POST',
             }).catch(console.error);
           }

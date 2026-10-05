@@ -9,6 +9,7 @@ import type {
   ServiceResult,
 } from './index.js';
 import { getAgentPaths, getTestableHomedir } from '../lib/paths.js';
+import { loadConfig } from '../lib/config.js';
 import { checkTmux } from '../lib/prerequisites.js';
 
 const execAsync = promisify(exec);
@@ -103,7 +104,7 @@ export class SystemdService implements ServiceManager {
       workingDirectory: paths.agentRoot,
       isDev: paths.isDev,
       configPath: paths.configPath,
-      dataDir: paths.dataDir,
+      port: loadConfig()?.agent.port,
     });
 
     writeFileSync(this.unitPath, unitContent, 'utf-8');
@@ -204,8 +205,12 @@ export class SystemdService implements ServiceManager {
     workingDirectory: string;
     isDev: boolean;
     configPath: string;
-    dataDir: string;
+    /** Port the agent must listen on; left out when no configuration could be loaded */
+    port?: number;
   }): string {
+    const portLine =
+      options.port === undefined ? '' : `\nEnvironment="AGENT_247_PORT=${options.port}"`;
+
     let execStart: string;
     if (options.isDev) {
       execStart = `/usr/bin/env npx tsx ${options.agentScript}`;
@@ -226,8 +231,7 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
-Environment="AGENT_247_CONFIG=${options.configPath}"
-Environment="AGENT_247_DATA=${options.dataDir}"
+Environment="AGENT_247_CONFIG=${options.configPath}"${portLine}
 Environment="PATH=/usr/local/bin:/usr/bin:/bin"
 
 [Install]

@@ -16,8 +16,8 @@ export async function POST(request: NextRequest, context: { params: Promise<{ pa
   const handler = await createHandler('POST');
   const response = await handler(request, context);
   if (!response.ok) {
-    const text = await response.clone().text();
-    console.error('[Auth POST Error]', response.status, text);
+    // Log status and path only: the response body can contain account details or tokens
+    console.error('[Auth POST Error]', response.status, request.nextUrl.pathname);
   }
   return response;
 }

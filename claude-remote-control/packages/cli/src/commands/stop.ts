@@ -15,7 +15,7 @@ export const stopCommand = new Command('stop')
 
     const spinner = ora(`Stopping agent (PID: ${status.pid})...`).start();
 
-    const result = stopAgent();
+    const result = await stopAgent();
 
     if (result.success) {
       spinner.succeed('Agent stopped');

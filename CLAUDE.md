@@ -8,9 +8,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Domain:** 247.quivr.com
 
-- To create a release of this project, use the `pnpm release` command from the main worktree only (not session worktrees). This ensures proper versioning and tagging.
+- To create a release of this project, use the `pnpm release` command from the main worktree only (not session worktrees), run inside `claude-remote-control/` (the pnpm workspace root). This ensures proper versioning and tagging.
 - Never deploy with vercel CLI, always use the release process to ensure consistency.
-- The web app is stateless and uses localStorage for agent URL persistence. All session data is stored locally by the agent using SQLite.
+- The web app stores accounts, saved agent connections and push subscriptions in Neon Postgres (Drizzle, `apps/web/src/lib/db`); per-device UI preferences live in localStorage. All session data is stored locally by the agent using SQLite.
 - The `pnpm release` command automates semantic versioning based on conventional commits
 - Always add tests for new features and changes. Run `pnpm test` before committing.
 - Mutualise as much code as possible between web and agent using the `packages/shared` package for types and utilities.
@@ -24,7 +24,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 | Package | Purpose |
 |---------|---------|
-| `apps/web` | Next.js 15 dashboard (stateless, localStorage only) |
+| `apps/web` | Next.js 16 dashboard (Neon Auth + Neon Postgres via Drizzle for accounts, saved agent connections and push subscriptions) |
 | `apps/agent` | Express server, WebSocket terminal, node-pty |
 | `packages/shared` | TypeScript types shared between web and agent |
 | `packages/hooks` | Claude Code plugin for stop notifications |

@@ -3,8 +3,9 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { createServiceManager } from '../service/index.js';
 
-export const serviceCommand = new Command('service')
-  .description('Manage the 247 agent system service');
+export const serviceCommand = new Command('service').description(
+  'Manage the 247 agent system service'
+);
 
 serviceCommand
   .command('install')

@@ -1,4 +1,5 @@
 #!/usr/bin/env tsx
+/* eslint-disable no-console -- release CLI prints progress and results to the operator */
 import { parseArgs } from 'util';
 import { execSync } from 'child_process';
 import chalk from 'chalk';

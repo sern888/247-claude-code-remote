@@ -1,5 +1,6 @@
 'use client';
 
+import { ServiceWorkerRegistrar } from '@/components/ServiceWorkerRegistrar';
 import { SessionPollingProvider } from '@/contexts/SessionPollingContext';
 import { useEffect, type ReactNode } from 'react';
 
@@ -36,5 +37,11 @@ function useClearAppBadge() {
 
 export function Providers({ children }: { children: ReactNode }) {
   useClearAppBadge();
-  return <SessionPollingProvider>{children}</SessionPollingProvider>;
+  return (
+    <>
+      {/* First, so the worker is registered before any child hook asks for it */}
+      <ServiceWorkerRegistrar />
+      <SessionPollingProvider>{children}</SessionPollingProvider>
+    </>
+  );
 }

@@ -7,9 +7,14 @@ import express from 'express';
 import cors from 'cors';
 import { WebSocketServer } from 'ws';
 import { createServer as createHttpServer } from 'http';
-import { execSync } from 'child_process';
+import type { IncomingMessage } from 'http';
+import type { Duplex } from 'stream';
 import { initDatabase, closeDatabase } from './db/index.js';
 import * as sessionsDb from './db/sessions.js';
+import { config } from './config.js';
+import { logger } from './logger.js';
+import { buildAllowedOrigins, isOriginAllowed } from './lib/origin.js';
+import { listSessionNamesSync } from './lib/tmux.js';
 
 // Routes
 import {
@@ -22,26 +27,39 @@ import {
 // WebSocket
 import { handleTerminalConnection, handleSessionsConnection } from './websocket-handlers.js';
 
-// Utility to get active tmux sessions
-function getActiveTmuxSessions(): Set<string> {
-  try {
-    const output = execSync('tmux list-sessions -F "#{session_name}" 2>/dev/null', {
-      encoding: 'utf-8',
-    });
-    return new Set(
-      output
-        .trim()
-        .split('\n')
-        .filter((s: string) => s)
-    );
-  } catch {
-    return new Set();
-  }
+// req.url is only a path; the base just lets URL parse it and must not come
+// from the Host header (a malformed one would throw).
+const UPGRADE_URL_BASE = 'http://localhost';
+
+function rejectUpgrade(socket: Duplex, statusLine: string): void {
+  socket.write(`HTTP/1.1 ${statusLine}\r\nConnection: close\r\n\r\n`);
+  socket.destroy();
 }
 
 export async function createServer() {
+  const allowedOrigins = buildAllowedOrigins({
+    dashboardUrl: config.dashboard?.apiUrl,
+    configured: config.agent?.allowedOrigins,
+    envValue: process.env.AGENT_247_ALLOWED_ORIGINS,
+  });
+
   const app = express();
-  app.use(cors());
+
+  // The agent hands out a shell: a web page the user merely visits must not
+  // be able to call it. Requests without an Origin (CLI, hooks) pass through.
+  app.use((req, res, next) => {
+    if (!isOriginAllowed(req.headers.origin, allowedOrigins)) {
+      logger.server.warn({ origin: req.headers.origin, path: req.path }, 'Rejected origin');
+      res.status(403).json({ error: 'Origin not allowed' });
+      return;
+    }
+    next();
+  });
+  app.use(
+    cors({
+      origin: (origin, callback) => callback(null, isOriginAllowed(origin, allowedOrigins)),
+    })
+  );
   app.use(express.json());
 
   const server = createHttpServer(app);
@@ -50,13 +68,18 @@ export async function createServer() {
   // Initialize SQLite database
   initDatabase();
 
-  // Reconcile sessions with active tmux sessions
-  const activeTmuxSessions = getActiveTmuxSessions();
-  sessionsDb.reconcileWithTmux(activeTmuxSessions);
+  // Reconcile sessions with active tmux sessions. When tmux cannot be queried
+  // we know nothing about what is running, so nothing may be cleaned up.
+  const activeTmuxSessions = listSessionNamesSync();
+  if (activeTmuxSessions) {
+    sessionsDb.reconcileWithTmux(activeTmuxSessions);
+  } else {
+    logger.server.warn('Could not query tmux, skipping session reconciliation');
+  }
 
   // Load existing sessions
   const dbSessions = sessionsDb.getAllSessions();
-  console.log(`[DB] Loaded ${dbSessions.length} sessions from database`);
+  logger.db.info({ count: dbSessions.length }, 'Loaded sessions from database');
 
   // Health check endpoint for container orchestration
   app.get('/health', (_req, res) => {
@@ -75,29 +98,40 @@ export async function createServer() {
   app.use('/api/hooks', createHooksRoutes());
 
   // Handle WebSocket upgrades
-  server.on('upgrade', async (req, socket, head) => {
-    const url = new URL(req.url!, `http://${req.headers.host}`);
+  server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+    try {
+      if (!isOriginAllowed(req.headers.origin, allowedOrigins)) {
+        logger.server.warn({ origin: req.headers.origin }, 'Rejected WebSocket origin');
+        rejectUpgrade(socket, '403 Forbidden');
+        return;
+      }
 
-    if (url.pathname === '/terminal') {
-      wss.handleUpgrade(req, socket, head, (ws) => {
-        handleTerminalConnection(ws, url);
-      });
-      return;
+      const url = new URL(req.url ?? '/', UPGRADE_URL_BASE);
+
+      if (url.pathname === '/terminal') {
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          handleTerminalConnection(ws, url);
+        });
+        return;
+      }
+
+      if (url.pathname === '/sessions') {
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          handleSessionsConnection(ws, url);
+        });
+        return;
+      }
+
+      socket.destroy();
+    } catch (err) {
+      logger.server.warn({ err }, 'Failed to handle WebSocket upgrade');
+      socket.destroy();
     }
-
-    if (url.pathname === '/sessions') {
-      wss.handleUpgrade(req, socket, head, (ws) => {
-        handleSessionsConnection(ws, url);
-      });
-      return;
-    }
-
-    socket.destroy();
   });
 
   // Graceful shutdown
   const shutdown = () => {
-    console.log('[Server] Shutting down...');
+    logger.server.info('Shutting down');
     closeDatabase();
     server.close();
     process.exit(0);

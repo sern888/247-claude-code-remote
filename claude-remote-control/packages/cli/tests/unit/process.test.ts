@@ -32,23 +32,48 @@ vi.mock('fs', () => ({
   openSync: vi.fn(() => 3), // Return fake file descriptor
 }));
 
+// Command line `ps` reports for the mocked agent process
+const AGENT_COMMAND = '/usr/local/bin/node /mock/agent/dist/index.js';
+
 // Mock child_process
 vi.mock('child_process', () => ({
   spawn: vi.fn(),
+  execFileSync: vi.fn(),
 }));
 
-// Store original process.kill
+// Store original process.kill and fetch
 const originalKill = process.kill;
+const originalFetch = global.fetch;
+
+function errnoError(code: string): NodeJS.ErrnoException {
+  const err: NodeJS.ErrnoException = new Error(code);
+  err.code = code;
+  return err;
+}
+
+function createSpawnedChild(pid: number | undefined = 99999) {
+  const child = new EventEmitter() as EventEmitter & { pid?: number; unref: () => void };
+  child.pid = pid;
+  child.unref = vi.fn();
+  return child;
+}
 
 describe('CLI Process', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
     vi.resetModules();
+
+    // By default the PID in the PID file really is the agent, and it answers /health
+    const { execFileSync } = await import('child_process');
+    vi.mocked(execFileSync).mockReturnValue(`${AGENT_COMMAND}\n`);
+    global.fetch = vi.fn().mockResolvedValue({ ok: true });
   });
 
   afterEach(() => {
-    // Restore process.kill
+    // Restore process.kill and fetch
     process.kill = originalKill;
+    global.fetch = originalFetch;
+    vi.useRealTimers();
   });
 
   describe('isAgentRunning', () => {
@@ -103,6 +128,71 @@ describe('CLI Process', () => {
 
       expect(result).toEqual({ running: false });
       expect(unlinkSync).toHaveBeenCalledWith('/mock/.247/agent.pid');
+    });
+
+    it('identifies the process with ps through an argument array, not a shell string', async () => {
+      const { existsSync, readFileSync } = await import('fs');
+      const { execFileSync } = await import('child_process');
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue('12345');
+      process.kill = vi.fn() as any;
+
+      const { isAgentRunning } = await import('../../src/lib/process.js');
+      isAgentRunning();
+
+      expect(execFileSync).toHaveBeenCalledWith(
+        'ps',
+        ['-ww', '-p', '12345', '-o', 'command='],
+        expect.any(Object)
+      );
+    });
+
+    it('treats a PID reused by another program as not running and removes the stale PID file', async () => {
+      const { existsSync, readFileSync, unlinkSync } = await import('fs');
+      const { execFileSync } = await import('child_process');
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue('12345');
+      vi.mocked(execFileSync).mockReturnValue('vim /home/user/notes.txt\n');
+      process.kill = vi.fn() as any;
+
+      const { isAgentRunning } = await import('../../src/lib/process.js');
+      const result = isAgentRunning();
+
+      expect(result).toEqual({ running: false });
+      expect(unlinkSync).toHaveBeenCalledWith('/mock/.247/agent.pid');
+    });
+
+    it('treats EPERM as alive: an agent owned by another user is reported as running', async () => {
+      const { existsSync, readFileSync, unlinkSync } = await import('fs');
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue('12345');
+      process.kill = vi.fn().mockImplementation(() => {
+        throw errnoError('EPERM');
+      }) as any;
+
+      const { isAgentRunning } = await import('../../src/lib/process.js');
+      const result = isAgentRunning();
+
+      expect(result).toEqual({ running: true, pid: 12345 });
+      expect(unlinkSync).not.toHaveBeenCalled();
+    });
+
+    it('trusts the PID file when the process cannot be identified at all', async () => {
+      const { existsSync, readFileSync } = await import('fs');
+      const { execFileSync } = await import('child_process');
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockImplementation((path) => {
+        if (String(path).startsWith('/proc/')) throw errnoError('ENOENT');
+        return '12345';
+      });
+      vi.mocked(execFileSync).mockImplementation(() => {
+        throw errnoError('ENOENT'); // ps is not installed
+      });
+      process.kill = vi.fn() as any;
+
+      const { isAgentRunning } = await import('../../src/lib/process.js');
+
+      expect(isAgentRunning()).toEqual({ running: true, pid: 12345 });
     });
   });
 
@@ -204,10 +294,7 @@ describe('CLI Process', () => {
       vi.mocked(readFileSync).mockReturnValue('99999');
 
       // Mock successful spawn
-      const mockChild = {
-        pid: 99999,
-        unref: vi.fn(),
-      };
+      const mockChild = createSpawnedChild(99999);
       vi.mocked(spawn).mockReturnValue(mockChild as any);
 
       // After spawn, process.kill should succeed
@@ -222,6 +309,106 @@ describe('CLI Process', () => {
       expect(result.success).toBe(true);
       expect(result.pid).toBe(99999);
     });
+
+    describe('after spawning', () => {
+      const config = {
+        machine: { id: 'test', name: 'Test' },
+        projects: { basePath: '~/Dev', whitelist: [] },
+        agent: { port: 4999 },
+      };
+
+      // Config present, entry point present, no PID file until we write one
+      const arrangeSpawn = async (child: ReturnType<typeof createSpawnedChild>) => {
+        const { existsSync, readFileSync } = await import('fs');
+        const { loadConfig } = await import('../../src/lib/config.js');
+        const { spawn } = await import('child_process');
+
+        vi.mocked(loadConfig).mockReturnValue(config);
+        vi.mocked(existsSync).mockImplementation((path) => String(path).includes('dist/index.js'));
+        vi.mocked(readFileSync).mockReturnValue(String(child.pid));
+        vi.mocked(spawn).mockReturnValue(child as any);
+        return { spawn };
+      };
+
+      it('passes the port and profile to the agent and no unused variables', async () => {
+        const { spawn } = await arrangeSpawn(createSpawnedChild());
+        process.kill = vi.fn() as any;
+
+        const { startAgentDaemon } = await import('../../src/lib/process.js');
+        await startAgentDaemon('dev');
+
+        const env = vi.mocked(spawn).mock.calls[0][2]?.env;
+        expect(env?.AGENT_247_PORT).toBe('4999');
+        expect(env?.AGENT_247_PROFILE).toBe('dev');
+        expect(env).not.toHaveProperty('AGENT_247_DATA');
+      });
+
+      it('reports healthy once the agent answers GET /health on its port', async () => {
+        await arrangeSpawn(createSpawnedChild());
+        process.kill = vi.fn() as any;
+
+        const { startAgentDaemon } = await import('../../src/lib/process.js');
+        const result = await startAgentDaemon();
+
+        expect(result).toEqual({ success: true, pid: 99999, healthy: true });
+        expect(global.fetch).toHaveBeenCalledWith(
+          'http://localhost:4999/health',
+          expect.any(Object)
+        );
+      });
+
+      it('reports the spawn failure instead of crashing on an unhandled error event', async () => {
+        const child = createSpawnedChild(undefined);
+        const { spawn } = await arrangeSpawn(child);
+        vi.mocked(spawn).mockImplementation(() => {
+          process.nextTick(() => child.emit('error', errnoError('ENOENT')));
+          return child as any;
+        });
+
+        const { startAgentDaemon } = await import('../../src/lib/process.js');
+        const result = await startAgentDaemon();
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('ENOENT');
+      });
+
+      it('fails and removes the PID file when the agent dies during startup', async () => {
+        const { unlinkSync, existsSync } = await import('fs');
+        await arrangeSpawn(createSpawnedChild());
+        vi.mocked(existsSync).mockImplementation((path) => {
+          const pathStr = String(path);
+          return pathStr.includes('dist/index.js') || pathStr.includes('agent.pid');
+        });
+        // No PID file before the spawn; afterwards the process is already gone
+        const { readFileSync } = await import('fs');
+        vi.mocked(readFileSync).mockReturnValue('');
+        process.kill = vi.fn().mockImplementation(() => {
+          throw errnoError('ESRCH');
+        }) as any;
+
+        const { startAgentDaemon } = await import('../../src/lib/process.js');
+        const result = await startAgentDaemon();
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('exited');
+        expect(unlinkSync).toHaveBeenCalledWith('/mock/.247/agent.pid');
+        expect(global.fetch).not.toHaveBeenCalled();
+      });
+
+      it('does not claim a healthy start when the agent never answers /health', async () => {
+        vi.useFakeTimers();
+        await arrangeSpawn(createSpawnedChild());
+        process.kill = vi.fn() as any;
+        global.fetch = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+
+        const { startAgentDaemon } = await import('../../src/lib/process.js');
+        const pending = startAgentDaemon();
+        await vi.advanceTimersByTimeAsync(60_000);
+        const result = await pending;
+
+        expect(result).toEqual({ success: true, pid: 99999, healthy: false });
+      });
+    });
   });
 
   describe('stopAgent', () => {
@@ -230,7 +417,7 @@ describe('CLI Process', () => {
       vi.mocked(existsSync).mockReturnValue(false);
 
       const { stopAgent } = await import('../../src/lib/process.js');
-      const result = stopAgent();
+      const result = await stopAgent();
 
       expect(result.success).toBe(true);
     });
@@ -253,7 +440,7 @@ describe('CLI Process', () => {
       }) as any;
 
       const { stopAgent } = await import('../../src/lib/process.js');
-      const result = stopAgent();
+      const result = await stopAgent();
 
       expect(result.success).toBe(true);
       expect(process.kill).toHaveBeenCalledWith(12345, 'SIGTERM');
@@ -276,10 +463,71 @@ describe('CLI Process', () => {
       }) as any;
 
       const { stopAgent } = await import('../../src/lib/process.js');
-      const result = stopAgent();
+      const result = await stopAgent();
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('EPERM');
+    });
+
+    it('never signals a PID that was reused by another program', async () => {
+      const { existsSync, readFileSync, unlinkSync } = await import('fs');
+      const { execFileSync } = await import('child_process');
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue('12345');
+      vi.mocked(execFileSync).mockReturnValue('/usr/bin/postgres -D /var/lib/postgres\n');
+      process.kill = vi.fn() as any;
+
+      const { stopAgent } = await import('../../src/lib/process.js');
+      const result = await stopAgent();
+
+      expect(result.success).toBe(true);
+      expect(process.kill).not.toHaveBeenCalledWith(12345, 'SIGTERM');
+      expect(process.kill).not.toHaveBeenCalledWith(12345, 'SIGKILL');
+      expect(unlinkSync).toHaveBeenCalledWith('/mock/.247/agent.pid');
+    });
+
+    it('refuses to kill an agent owned by another user', async () => {
+      const { existsSync, readFileSync, unlinkSync } = await import('fs');
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue('12345');
+      process.kill = vi.fn().mockImplementation(() => {
+        throw errnoError('EPERM');
+      }) as any;
+
+      const { stopAgent } = await import('../../src/lib/process.js');
+      const result = await stopAgent();
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('another user');
+      expect(process.kill).not.toHaveBeenCalledWith(12345, 'SIGTERM');
+      expect(process.kill).not.toHaveBeenCalledWith(12345, 'SIGKILL');
+      expect(unlinkSync).not.toHaveBeenCalled();
+    });
+
+    it('waits with timers instead of blocking, then force kills an agent that ignores SIGTERM', async () => {
+      vi.useFakeTimers();
+      const { existsSync, readFileSync, unlinkSync } = await import('fs');
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue('12345');
+      process.kill = vi.fn() as any; // never exits on its own
+
+      const { stopAgent } = await import('../../src/lib/process.js');
+      let settled = false;
+      const pending = stopAgent().then((result) => {
+        settled = true;
+        return result;
+      });
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(settled).toBe(false);
+      expect(process.kill).not.toHaveBeenCalledWith(12345, 'SIGKILL');
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      const result = await pending;
+
+      expect(result.success).toBe(true);
+      expect(process.kill).toHaveBeenCalledWith(12345, 'SIGKILL');
+      expect(unlinkSync).toHaveBeenCalledWith('/mock/.247/agent.pid');
     });
   });
 
@@ -363,10 +611,7 @@ describe('CLI Process', () => {
       }) as any;
 
       // Mock spawn for start
-      const mockChild = {
-        pid: 99999,
-        unref: vi.fn(),
-      };
+      const mockChild = createSpawnedChild(99999);
       vi.mocked(spawn).mockImplementation(() => {
         // After spawn, mark as running
         setTimeout(() => {

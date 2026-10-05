@@ -1,8 +1,14 @@
 'use client';
 
 import { useRef, useCallback, useEffect, useState } from 'react';
+import { createLogger } from '@/lib/logger';
 
 const DEFAULT_SOUND_PATH = '/sounds/chime.mp3';
+const soundLogger = createLogger('Sound');
+
+function errorMessageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 interface UseSoundNotificationsOptions {
   soundPath?: string;
@@ -87,7 +93,7 @@ export function useSoundNotifications(options?: UseSoundNotificationsOptions) {
       return true;
     } catch (error) {
       // Browser blocked autoplay - this is expected before user interaction
-      console.debug('Sound playback blocked:', error);
+      soundLogger.debug('Sound playback blocked', { errorMessage: errorMessageOf(error) });
       return false;
     }
   }, [isLoaded]);
@@ -113,7 +119,9 @@ export function useSoundNotifications(options?: UseSoundNotificationsOptions) {
       await previewAudio.play();
       return true;
     } catch (error) {
-      console.debug('Preview sound playback blocked:', error);
+      soundLogger.debug('Preview sound playback blocked', {
+        errorMessage: errorMessageOf(error),
+      });
       return false;
     }
   }, []);

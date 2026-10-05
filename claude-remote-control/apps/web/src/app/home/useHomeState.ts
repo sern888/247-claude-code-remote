@@ -7,8 +7,16 @@ import {
   useAgentConnections,
   type AgentConnection as DbAgentConnection,
 } from '@/hooks/useAgentConnections';
+import {
+  NEW_SESSION_SUFFIX,
+  buildSessionName,
+  sanitizeSessionName,
+} from '@/components/Terminal/constants';
 import type { LocalMachine, SelectedSession } from './types';
 import { DEFAULT_MACHINE_ID } from './types';
+
+// Anything matching this is an open overlay that owns the Escape key
+const ESCAPE_OWNER_SELECTOR = '[role="dialog"], [role="alertdialog"], [role="search"]';
 
 // Legacy type for backward compatibility with AgentConnectionSettings component
 export interface AgentConnection {
@@ -36,6 +44,24 @@ function connectionToMachine(connection: StoredAgentConnection): LocalMachine {
   };
 }
 
+/**
+ * True when an Escape key press belongs to something else: another handler
+ * already consumed it, or a modal, dialog or search bar is open.
+ */
+function isEscapeClaimed(event: KeyboardEvent, hasOpenModal: boolean): boolean {
+  if (event.defaultPrevented || hasOpenModal) return true;
+  return document.querySelector(ESCAPE_OWNER_SELECTOR) !== null;
+}
+
+/**
+ * React key of the session view. A session started here keeps the key it was
+ * given at start, so the terminal is not remounted when the placeholder name
+ * is replaced by the real one.
+ */
+export function getSessionViewKey(session: SelectedSession): string {
+  return session.viewKey ?? `${session.machineId}-${session.project}-${session.sessionName}`;
+}
+
 export function useHomeState() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -60,17 +86,25 @@ export function useHomeState() {
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   const hasRestoredFromUrl = useRef(false);
+  const viewKeyCounterRef = useRef(0);
   const allSessions = getAllSessions();
+
+  // All machines from all connections
+  const machines: LocalMachine[] = useMemo(
+    () => agentConnections.map(connectionToMachine),
+    [agentConnections]
+  );
 
   // Sync connections to polling context when they change
   useEffect(() => {
-    if (agentConnections.length > 0) {
-      const machines = agentConnections.map(connectionToMachine);
-      setPollingMachines(machines);
-    } else {
-      setPollingMachines([]);
-    }
-  }, [agentConnections, setPollingMachines]);
+    setPollingMachines(machines);
+  }, [machines, setPollingMachines]);
+
+  // A view key that is unique per started session and survives its rename
+  const createViewKey = useCallback((machineId: string, project: string) => {
+    viewKeyCounterRef.current += 1;
+    return `${machineId}-${project}-${NEW_SESSION_SUFFIX}-${viewKeyCounterRef.current}`;
+  }, []);
 
   // Loading state
   const loading = connectionsLoading;
@@ -102,9 +136,11 @@ export function useHomeState() {
     if (createParam && sessionParam && projectParam) {
       setSelectedSession({
         machineId: machineParam,
-        sessionName: sessionParam,
+        // The name comes from the URL and is sent to the agent: keep it a valid session name
+        sessionName: sanitizeSessionName(sessionParam),
         project: projectParam,
         planningProjectId: planningProjectIdParam || undefined,
+        viewKey: createViewKey(machineParam, projectParam),
       });
       hasRestoredFromUrl.current = true;
       return;
@@ -124,7 +160,7 @@ export function useHomeState() {
         hasRestoredFromUrl.current = true;
       }
     }
-  }, [searchParams, allSessions]);
+  }, [searchParams, allSessions, createViewKey]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -138,7 +174,13 @@ export function useHomeState() {
         }
       }
 
-      if (e.key === 'Escape' && selectedSession && !isFullscreen) {
+      const hasOpenModal = newSessionOpen || connectionModalOpen;
+      if (
+        e.key === 'Escape' &&
+        selectedSession &&
+        !isFullscreen &&
+        !isEscapeClaimed(e, hasOpenModal)
+      ) {
         e.preventDefault();
         setSelectedSession(null);
         const params = new URLSearchParams(window.location.search);
@@ -156,7 +198,7 @@ export function useHomeState() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [agentConnection, selectedSession, isFullscreen]);
+  }, [agentConnection, selectedSession, isFullscreen, newSessionOpen, connectionModalOpen]);
 
   const clearSessionFromUrl = useCallback(() => {
     const params = new URLSearchParams(searchParams.toString());
@@ -168,7 +210,14 @@ export function useHomeState() {
 
   const handleSelectSession = useCallback(
     (machineId: string, sessionName: string, project: string) => {
-      setSelectedSession({ machineId, sessionName, project });
+      // An explicit choice wins over a pending restore from the URL
+      hasRestoredFromUrl.current = true;
+      // Re-selecting the open session keeps its view (and its terminal connection) as is
+      setSelectedSession((prev) =>
+        prev?.machineId === machineId && prev.sessionName === sessionName
+          ? prev
+          : { machineId, sessionName, project }
+      );
 
       const params = new URLSearchParams(searchParams.toString());
       params.set('session', sessionName);
@@ -180,12 +229,17 @@ export function useHomeState() {
 
   const handleStartSession = useCallback(
     (machineId: string, project: string, environmentId?: string) => {
-      const newSessionName = `${project}--new`;
+      // The URL now describes this session: restoring from it later would replace the
+      // selection (losing viewKey/environmentId) and remount the terminal.
+      hasRestoredFromUrl.current = true;
+      // Placeholder until the agent confirms the real name (see handleSessionCreated)
+      const newSessionName = buildSessionName(project, NEW_SESSION_SUFFIX);
       setSelectedSession({
         machineId,
         sessionName: newSessionName,
         project,
         environmentId,
+        viewKey: createViewKey(machineId, project),
       });
       setNewSessionOpen(false);
 
@@ -195,13 +249,18 @@ export function useHomeState() {
       params.set('create', 'true');
       router.replace(`?${params.toString()}`, { scroll: false });
     },
-    [searchParams, router]
+    [searchParams, router, createViewKey]
   );
 
   const handleSessionCreated = useCallback(
     (actualSessionName: string) => {
       if (selectedSession) {
-        setSelectedSession((prev) => (prev ? { ...prev, sessionName: actualSessionName } : null));
+        // Only the name changes: viewKey is kept, so the terminal stays mounted
+        setSelectedSession((prev) =>
+          prev && prev.sessionName !== actualSessionName
+            ? { ...prev, sessionName: actualSessionName }
+            : prev
+        );
         const params = new URLSearchParams(searchParams.toString());
         params.set('session', actualSessionName);
         params.delete('create');
@@ -305,9 +364,6 @@ export function useHomeState() {
       (s) => s.name === selectedSession.sessionName && s.machineId === selectedSession.machineId
     );
   }, [selectedSession, allSessions]);
-
-  // All machines from all connections
-  const machines: LocalMachine[] = agentConnections.map(connectionToMachine);
 
   // Legacy: currentMachine is the first machine (for backward compatibility)
   const currentMachine: LocalMachine | null = machines.length > 0 ? machines[0] : null;

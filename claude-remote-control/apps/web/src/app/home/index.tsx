@@ -13,7 +13,7 @@ import { SlideOverPanel } from '@/components/ui/SlideOverPanel';
 import { ConnectionGuide } from '@/components/ConnectionGuide';
 import { LoadingView } from './LoadingView';
 import { NoConnectionView } from './NoConnectionView';
-import { useHomeState } from './useHomeState';
+import { useHomeState, getSessionViewKey } from './useHomeState';
 import { useIsMobile } from '@/hooks/useMediaQuery';
 import { useViewportHeight } from '@/hooks/useViewportHeight';
 import { usePullToRefresh } from '@/hooks/usePullToRefresh';
@@ -232,10 +232,10 @@ export function HomeContent() {
   const handleSelectSessionFromList = useCallback(
     (item: SessionListItem) => {
       // Auto-acknowledge if needs_attention (replicate HomeSidebar behavior)
-      if (item.status === 'needs_attention' && item.machineId) {
+      if (item.status === 'needs_attention') {
         acknowledgeSession(item.machineId, item.name);
       }
-      handleSelectSession(item.machineId!, item.name, item.project);
+      handleSelectSession(item.machineId, item.name, item.project);
     },
     [handleSelectSession, acknowledgeSession]
   );
@@ -243,9 +243,9 @@ export function HomeContent() {
   // Handler pour kill depuis SessionListPanel (uses shared hook)
   const handleKillSessionFromList = useCallback(
     async (item: SessionListItem) => {
-      const success = await killSession(item.machineId!, item.name);
+      const success = await killSession(item.machineId, item.name);
       if (success) {
-        handleSessionKilled(item.machineId!, item.name);
+        handleSessionKilled(item.machineId, item.name);
       }
     },
     [killSession, handleSessionKilled]
@@ -254,26 +254,23 @@ export function HomeContent() {
   // Handler pour archive depuis SessionListPanel (uses shared hook)
   const handleArchiveSessionFromList = useCallback(
     async (item: SessionListItem) => {
-      const success = await archiveSession(item.machineId!, item.name);
+      const success = await archiveSession(item.machineId, item.name);
       if (success) {
-        handleSessionArchived(item.machineId!, item.name);
+        handleSessionArchived(item.machineId, item.name);
       }
     },
     [archiveSession, handleSessionArchived]
   );
 
-  // Create agent status and session count maps for UnifiedAgentManager
-  const agentStatuses = new Map<string, 'online' | 'offline' | 'connecting'>();
-  const sessionCountsMap = new Map<string, number>();
-  agentConnections.forEach((conn) => {
-    const machineData = sessionsByMachine.get(conn.id);
-    const wsConnected = isWsConnected(conn.id);
-    agentStatuses.set(
-      conn.id,
-      machineData?.error ? 'offline' : wsConnected ? 'online' : 'connecting'
-    );
-    sessionCountsMap.set(conn.id, machineData?.sessions?.length ?? 0);
-  });
+  // Agent status and session count maps for UnifiedAgentManager (derived from the sidebar data)
+  const agentStatuses = useMemo(
+    () => new Map(sidebarMachines.map((m) => [m.id, m.status])),
+    [sidebarMachines]
+  );
+  const sessionCountsMap = useMemo(
+    () => new Map(sidebarMachines.map((m) => [m.id, m.sessionCount])),
+    [sidebarMachines]
+  );
 
   // Pull-to-refresh for mobile PWA
   const { pullDistance, isRefreshing, isPulling, isThresholdReached, handlers } = usePullToRefresh({
@@ -408,7 +405,7 @@ export function HomeContent() {
           {/* Main content */}
           {selectedSession ? (
             <SessionView
-              key={`${selectedSession.machineId}-${selectedSession.project}-${selectedSession.sessionName.endsWith('--new') ? 'new' : selectedSession.sessionName}`}
+              key={getSessionViewKey(selectedSession)}
               sessionName={selectedSession.sessionName}
               project={selectedSession.project}
               agentUrl={getAgentUrl()}
@@ -441,7 +438,7 @@ export function HomeContent() {
 
   return (
     <main
-      className="h-screen-safe flex flex-col overflow-hidden bg-[#0a0a10]"
+      className="h-screen-safe flex flex-col overflow-hidden overscroll-y-contain bg-[#0a0a10]"
       onTouchStart={handlers.onTouchStart}
       onTouchMove={handlers.onTouchMove}
       onTouchEnd={handlers.onTouchEnd}
@@ -505,7 +502,7 @@ export function HomeContent() {
       <div className="relative flex flex-1 flex-col overflow-hidden">
         {selectedSession ? (
           <SessionView
-            key={`${selectedSession.machineId}-${selectedSession.project}-${selectedSession.sessionName.endsWith('--new') ? 'new' : selectedSession.sessionName}`}
+            key={getSessionViewKey(selectedSession)}
             sessionName={selectedSession.sessionName}
             project={selectedSession.project}
             agentUrl={getAgentUrl()}

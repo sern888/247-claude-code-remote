@@ -17,21 +17,21 @@ Ever wanted to check on your Claude Code session from your phone? Or start a qui
 - **Mobile-first**: Fully responsive web terminal with touch scroll support
 - **Always accessible**: Access your dev machine from any browser, anywhere
 - **Session persistence**: Leave and come back - your sessions stay alive via tmux
-- **Secure by design**: Cloudflare Tunnel integration, no port forwarding needed
+- **No port forwarding**: reach the agent through a tunnel (Tailscale or Cloudflare) — see [Security](#security)
 - **PWA ready**: Install as an app on your phone for instant access
 
 ## Features
 
 | Feature                     | Description                                  |
 | --------------------------- | -------------------------------------------- |
-| **Web Terminal**            | Full xterm.js terminal with WebGL rendering  |
+| **Web Terminal**            | Full xterm.js terminal with canvas rendering |
 | **Claude Code Integration** | One-click launch of Claude Code sessions     |
 | **Multi-Project Support**   | Switch between projects from the dashboard   |
 | **Session Management**      | Persistent tmux sessions survive disconnects |
 | **Real-time Sync**          | WebSocket-based instant communication        |
 | **Mobile Optimized**        | Touch gestures, virtual keyboard support     |
 | **Dark/Light Mode**         | Automatic theme detection                    |
-| **Offline Capable**         | PWA with service worker caching              |
+| **Installable PWA**         | Add to home screen, push notifications       |
 
 ## Quick Start
 
@@ -39,14 +39,14 @@ Ever wanted to check on your Claude Code session from your phone? Or start a qui
 
 - **Node.js 22+**
 - **tmux** installed (`brew install tmux` on macOS)
-- **Cloudflare Tunnel** (optional, for remote access)
+- **Tailscale or Cloudflare Tunnel** (optional, for remote access)
 
 ### Installation
 
 ```bash
 # Clone the repository
 git clone https://github.com/QuivrHQ/247.git
-cd 247
+cd 247/claude-remote-control
 
 # Install dependencies
 pnpm install
@@ -109,7 +109,7 @@ npm install -g 247-cli
 ```
 247/
 ├── apps/
-│   ├── web/          # Next.js 15 dashboard (deployed to Vercel)
+│   ├── web/          # Next.js 16 dashboard (deployed to Vercel)
 │   └── agent/        # Node.js agent (runs on your machine)
 ├── packages/
 │   ├── cli/          # CLI tool for agent management
@@ -119,16 +119,19 @@ npm install -g 247-cli
 
 ## Configuration
 
-Create `apps/agent/config.json`:
+The agent reads `~/.247/config.json` (created by `247 init`, or by
+`scripts/setup-local.sh` when running from source):
 
 ```json
 {
   "machine": {
-    "id": "macbook-pro",
+    "id": "a-unique-id",
     "name": "MacBook Pro"
   },
-  "tunnel": {
-    "domain": "your-tunnel.trycloudflare.com"
+  "agent": {
+    "port": 4678,
+    "host": "127.0.0.1",
+    "allowedOrigins": []
   },
   "projects": {
     "basePath": "~/Dev",
@@ -136,6 +139,29 @@ Create `apps/agent/config.json`:
   }
 }
 ```
+
+- `projects.basePath` is the folder whose sub-folders are offered as projects;
+  an empty `whitelist` allows all of them.
+- `agent.host` is the interface the agent listens on. It defaults to loopback
+  (`127.0.0.1`); tunnels connect locally, so this rarely needs changing.
+- `agent.allowedOrigins` lists extra dashboard origins (for a self-hosted
+  dashboard). `https://247.quivr.com` and `http://localhost:3001` are always
+  allowed.
+
+## Security
+
+The agent hands out a terminal on your machine, so treat its address like a
+password:
+
+- It listens on loopback only by default and rejects browser requests whose
+  `Origin` is not an allowed dashboard, so a web page you merely visit cannot
+  talk to it.
+- **It has no authentication.** Anyone who can reach its URL with a non-browser
+  client can open a terminal. A Tailscale Funnel or a public Cloudflare
+  hostname is reachable by the whole internet — prefer tailnet-only access
+  (`tailscale serve`) or put Cloudflare Access in front of the hostname.
+- The deploy scripts for Fly.io and Railway refuse to publish the agent on a
+  public URL unless you set `ALLOW_PUBLIC_AGENT=1`.
 
 ## Development Commands
 
@@ -149,30 +175,15 @@ Create `apps/agent/config.json`:
 | `pnpm typecheck` | TypeScript type checking      |
 | `pnpm lint`      | Lint all packages             |
 | `pnpm release`   | Semantic versioning release   |
-| `./dev.sh`       | Start web & agent in tmux     |
-
-### Local Development with tmux
-
-For a better development experience, use the included tmux script:
-
-```bash
-cd claude-remote-control
-./dev.sh
-```
-
-This creates a tmux session with web and agent in split panes. Useful shortcuts:
-- `Ctrl+b` then `←/→` - switch between panes
-- `Ctrl+b` then `d` - detach (servers keep running)
-- `tmux attach -t 247-dev` - reattach later
 
 ## Tech Stack
 
-- **Frontend**: Next.js 15, React 19, Tailwind CSS, xterm.js
+- **Frontend**: Next.js 16, React 19, Tailwind CSS, xterm.js
 - **Backend**: Express, WebSocket (ws), node-pty
-- **Database**: SQLite (better-sqlite3) for local persistence
+- **Database**: SQLite (better-sqlite3) on the agent for sessions; Neon Postgres (Drizzle) on the dashboard for accounts, saved agent connections and push subscriptions
 - **Terminal**: tmux for session persistence
 - **Build**: pnpm workspaces, Turborepo
-- **Deployment**: Vercel (web), Cloudflare Tunnel (agent)
+- **Deployment**: Vercel (web), Tailscale or Cloudflare Tunnel (agent)
 
 ## Roadmap
 

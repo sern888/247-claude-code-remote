@@ -13,12 +13,17 @@ import { profileCommand } from './commands/profile.js';
 import { versionCommand } from './commands/version.js';
 import { hooksCommand } from './commands/hooks.js';
 
+// Single source of truth for the version, read the same way as `247 version` and `247 update`
+const pkg = await import('../package.json', {
+  with: { type: 'json' },
+});
+
 const program = new Command();
 
 program
   .name('247')
   .description('247 - Access Claude Code from anywhere 24/7\nby The Vibe Company')
-  .version('2.44.2')
+  .version(pkg.default.version)
   .option('-P, --profile <name>', 'Use a specific profile (dev, prod, etc.)');
 
 // Add commands
