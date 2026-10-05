@@ -24,6 +24,7 @@ import {
   Pencil,
 } from 'lucide-react';
 import { cn, buildWebSocketUrl, stripProtocol } from '@/lib/utils';
+import { wsSubprotocols } from '@/lib/agent-auth';
 import type { StoredAgentConnection } from './AgentConnectionSettings';
 import { EditAgentModal } from './EditAgentModal';
 
@@ -367,7 +368,7 @@ function AddAgentForm({
     setTestState('testing');
     try {
       const wsUrl = buildWebSocketUrl(fullUrl, '/terminal?project=test&session=test-connection');
-      const ws = new WebSocket(wsUrl);
+      const ws = new WebSocket(wsUrl, wsSubprotocols(authToken.trim() || undefined));
 
       const timeout = setTimeout(() => {
         ws.close();
