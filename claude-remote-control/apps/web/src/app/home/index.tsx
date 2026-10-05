@@ -83,6 +83,7 @@ export function HomeContent() {
     machines,
     getArchivedSessions: _getArchivedSessions,
     getAgentUrl,
+    getAuthToken,
     getSelectedSessionInfo,
     handleSelectSession,
     handleStartSession,
@@ -409,6 +410,7 @@ export function HomeContent() {
               sessionName={selectedSession.sessionName}
               project={selectedSession.project}
               agentUrl={getAgentUrl()}
+              authToken={getAuthToken()}
               sessionInfo={getSelectedSessionInfo()}
               environmentId={selectedSession.environmentId}
               planningProjectId={selectedSession.planningProjectId}
@@ -506,6 +508,7 @@ export function HomeContent() {
             sessionName={selectedSession.sessionName}
             project={selectedSession.project}
             agentUrl={getAgentUrl()}
+            authToken={getAuthToken()}
             sessionInfo={getSelectedSessionInfo()}
             environmentId={selectedSession.environmentId}
             planningProjectId={selectedSession.planningProjectId}

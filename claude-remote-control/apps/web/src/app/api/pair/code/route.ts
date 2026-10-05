@@ -15,11 +15,16 @@ const PAIRING_CODE_PATTERN = /^\d{6}$/;
 const PAIRING_CODE_TTL_MS = 10 * 60 * 1000; // must match src/lib/pairing-codes.ts
 const MAX_MACHINE_ID_LENGTH = 100;
 const MAX_MACHINE_NAME_LENGTH = 100;
+const MAX_AUTH_TOKEN_LENGTH = 512;
+const WHITESPACE_PATTERN = /\s/;
 
-type PairingCodeInput = Pick<PairingCodeInfo, 'code' | 'machineId' | 'machineName' | 'agentUrl'>;
+type PairingCodeInput = Pick<
+  PairingCodeInfo,
+  'code' | 'machineId' | 'machineName' | 'agentUrl' | 'authToken'
+>;
 
 function parsePairingCodeBody(body: JsonObject): ValidationResult<PairingCodeInput> {
-  const { code, machineId, machineName, agentUrl } = body;
+  const { code, machineId, machineName, agentUrl, authToken } = body;
 
   if (typeof code !== 'string' || !PAIRING_CODE_PATTERN.test(code)) {
     return { ok: false, error: 'Code must be 6 digits' };
@@ -33,8 +38,23 @@ function parsePairingCodeBody(body: JsonObject): ValidationResult<PairingCodeInp
   if (typeof agentUrl !== 'string' || !parseHostPort(agentUrl)) {
     return { ok: false, error: 'agentUrl must be a hostname with an optional port' };
   }
+  if (
+    authToken !== undefined &&
+    (!isBoundedString(authToken, MAX_AUTH_TOKEN_LENGTH) || WHITESPACE_PATTERN.test(authToken))
+  ) {
+    return { ok: false, error: 'authToken must be a non-empty string without whitespace' };
+  }
 
-  return { ok: true, value: { code, machineId, machineName, agentUrl } };
+  return {
+    ok: true,
+    value: {
+      code,
+      machineId,
+      machineName,
+      agentUrl,
+      authToken: typeof authToken === 'string' ? authToken : undefined,
+    },
+  };
 }
 
 /**
@@ -103,6 +123,7 @@ export async function GET(req: Request) {
       machineId: codeInfo.machineId,
       machineName: codeInfo.machineName,
       agentUrl: codeInfo.agentUrl,
+      authToken: codeInfo.authToken,
       expiresAt: codeInfo.expiresAt,
     });
   } catch (error) {

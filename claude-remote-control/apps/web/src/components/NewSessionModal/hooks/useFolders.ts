@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { buildApiUrl } from '@/lib/utils';
+import { authHeaders } from '@/lib/agent-auth';
 import { createLogger } from '@/lib/logger';
 
 interface Machine {
@@ -11,6 +12,7 @@ interface Machine {
   config?: {
     projects: string[];
     agentUrl?: string;
+    authToken?: string;
   };
 }
 
@@ -23,8 +25,15 @@ function toFolderList(data: unknown): string[] {
   return data.filter((item): item is string => typeof item === 'string');
 }
 
-async function fetchFolders(agentUrl: string, signal: AbortSignal): Promise<string[]> {
-  const response = await fetch(buildApiUrl(agentUrl, '/api/folders'), { signal });
+async function fetchFolders(
+  agentUrl: string,
+  authToken: string | undefined,
+  signal: AbortSignal
+): Promise<string[]> {
+  const response = await fetch(buildApiUrl(agentUrl, '/api/folders'), {
+    signal,
+    headers: authHeaders(authToken),
+  });
   if (!response.ok) throw new Error(`Agent responded with status ${response.status}`);
   return toFolderList(await response.json());
 }
@@ -50,6 +59,7 @@ export function useFolders(selectedMachine: Machine | null) {
     const controller = new AbortController();
     let cancelled = false;
     const agentUrl = selectedMachine.config?.agentUrl || DEFAULT_AGENT_URL;
+    const authToken = selectedMachine.config?.authToken;
     const fallbackFolders = selectedMachine.config?.projects ?? [];
 
     const loadFolders = async () => {
@@ -57,7 +67,7 @@ export function useFolders(selectedMachine: Machine | null) {
       showFolders([]);
       setLoadingFolders(true);
       try {
-        const folderList = await fetchFolders(agentUrl, controller.signal);
+        const folderList = await fetchFolders(agentUrl, authToken, controller.signal);
         if (!cancelled) showFolders(folderList);
       } catch (err) {
         if (cancelled) return;

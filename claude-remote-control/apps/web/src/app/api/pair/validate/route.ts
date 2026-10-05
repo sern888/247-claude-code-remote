@@ -65,10 +65,15 @@ function decodeToken(token: string): ValidationResult<TokenPayload> {
 
 /**
  * Ask the agent to verify the token signature.
- * Returns true ONLY when the agent answered 2xx with `{ valid: true }`. Unreachable agent,
- * timeout, redirect, error status or unexpected body all mean "not verified".
+ * `verified` is true ONLY when the agent answered 2xx with `{ valid: true }`. Unreachable
+ * agent, timeout, redirect, error status or unexpected body all mean "not verified".
+ * When verified, `authToken` carries the agent's long-lived bearer token (if it set one),
+ * so the dashboard can store it and authenticate the real connection later.
  */
-async function verifyWithAgent(baseUrl: string, token: string): Promise<boolean> {
+async function verifyWithAgent(
+  baseUrl: string,
+  token: string
+): Promise<{ verified: boolean; authToken?: string }> {
   try {
     const res = await fetch(`${baseUrl}${AGENT_VERIFY_PATH}`, {
       method: 'POST',
@@ -79,14 +84,18 @@ async function verifyWithAgent(baseUrl: string, token: string): Promise<boolean>
     });
 
     if (!res.ok) {
-      return false;
+      return { verified: false };
     }
 
     const data: unknown = await res.json();
-    return isJsonObject(data) && data.valid === true;
+    if (!isJsonObject(data) || data.valid !== true) {
+      return { verified: false };
+    }
+    const authToken = typeof data.authToken === 'string' ? data.authToken : undefined;
+    return { verified: true, authToken };
   } catch {
     // Unreachable agent / timeout / redirect / non-JSON body: the token stays unverified
-    return false;
+    return { verified: false };
   }
 }
 
@@ -108,6 +117,7 @@ function validateCode(code: unknown) {
     machineId: codeInfo.machineId,
     machineName: codeInfo.machineName,
     agentUrl: codeInfo.agentUrl,
+    authToken: codeInfo.authToken,
   });
 }
 
@@ -132,15 +142,22 @@ async function validateToken(token: unknown) {
   // 'blocked' = loopback/private host seen by the production server. The server must not
   // call it, but the user's browser legitimately can (agent on their own machine), so the
   // pairing info is returned as unverified and the agent authenticates the real connection.
-  const verified = target.ok ? await verifyWithAgent(target.baseUrl, token) : false;
+  const verification = target.ok
+    ? await verifyWithAgent(target.baseUrl, token)
+    : { verified: false as const };
 
-  if (!verified) {
+  if (!verification.verified) {
     console.warn(
       `Pairing token not verified by agent (${target.ok ? target.host : 'host not allowed'})`
     );
   }
 
-  return NextResponse.json({ valid: true, ...decoded.value, verified });
+  return NextResponse.json({
+    valid: true,
+    ...decoded.value,
+    verified: verification.verified,
+    authToken: verification.authToken,
+  });
 }
 
 /**

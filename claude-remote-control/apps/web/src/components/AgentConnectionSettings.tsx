@@ -473,6 +473,10 @@ export function AgentConnectionSettings({
     setTestState('testing');
 
     try {
+      // No auth token here on purpose: this tests a manually entered URL, which
+      // has no paired token. A token-protected agent is added via pairing (which
+      // carries its token), not by manual URL entry, so it is expected to fail
+      // this unauthenticated probe.
       const wsUrl = buildWebSocketUrl(url, '/terminal?project=test&session=test-connection');
       const ws = new WebSocket(wsUrl);
 

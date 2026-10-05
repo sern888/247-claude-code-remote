@@ -1,5 +1,6 @@
 import { createServer } from './server.js';
 import { config } from './config.js';
+import { resolveAuthToken } from './lib/auth.js';
 import { logger } from './logger.js';
 
 const DEFAULT_PORT = 4678;
@@ -25,6 +26,14 @@ const HOST =
 
 // Hook scripts running inside the sessions post back to this port
 process.env.AGENT_247_PORT = String(PORT);
+
+// Hook scripts must authenticate to the agent like any other client. Export
+// the effective token so each tmux session inherits it (terminal.ts spawns
+// with the agent's environment) and notify-247.sh can send it.
+const effectiveToken = resolveAuthToken(config.agent?.authToken, process.env.AGENT_247_AUTH_TOKEN);
+if (effectiveToken) {
+  process.env.AGENT_247_TOKEN = effectiveToken;
+}
 
 process.on('unhandledRejection', (reason) => {
   logger.main.error({ err: reason }, 'Unhandled promise rejection');

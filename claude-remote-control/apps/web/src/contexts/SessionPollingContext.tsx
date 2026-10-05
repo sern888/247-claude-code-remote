@@ -12,6 +12,7 @@ import {
 } from 'react';
 import { SessionInfo, SessionWithMachine } from '@/lib/types';
 import { buildWebSocketUrl, buildApiUrl } from '@/lib/utils';
+import { authHeaders, wsSubprotocols } from '@/lib/agent-auth';
 import { wsLogger, pollingLogger, archivedLogger } from '@/lib/logger';
 import type { WSSessionInfo, WSSessionsMessageFromAgent } from '247-shared';
 
@@ -22,6 +23,7 @@ export interface Machine {
   config?: {
     projects: string[];
     agentUrl?: string;
+    authToken?: string;
   };
 }
 
@@ -104,6 +106,10 @@ function limitSessions(sessions: SessionInfo[], maxCount: number): SessionInfo[]
 
 function agentUrlOf(machine: Machine): string {
   return machine.config?.agentUrl || DEFAULT_AGENT_URL;
+}
+
+function authTokenOf(machine: Machine): string | undefined {
+  return machine.config?.authToken;
 }
 
 function isOnline(machine: Machine): boolean {
@@ -284,6 +290,7 @@ async function fetchSessions(machine: Machine): Promise<PollResult> {
   try {
     const response = await fetch(buildApiUrl(agentUrlOf(machine), '/api/sessions'), {
       signal: controller.signal,
+      headers: authHeaders(authTokenOf(machine)),
     });
     if (!response.ok) throw new Error('Failed to fetch sessions');
 
@@ -450,7 +457,7 @@ export function SessionPollingProvider({ children }: { children: ReactNode }) {
 
       let ws: WebSocket;
       try {
-        ws = new WebSocket(wsUrl);
+        ws = new WebSocket(wsUrl, wsSubprotocols(authTokenOf(machine)));
       } catch (err) {
         wsLogger.error(`Failed to create WebSocket for ${machine.name}`, err);
         wsConnectionKeysRef.current.delete(machine.id);
@@ -568,7 +575,9 @@ export function SessionPollingProvider({ children }: { children: ReactNode }) {
     const agentUrl = agentUrlOf(machine);
 
     try {
-      const response = await fetch(buildApiUrl(agentUrl, '/api/sessions/archived'));
+      const response = await fetch(buildApiUrl(agentUrl, '/api/sessions/archived'), {
+        headers: authHeaders(authTokenOf(machine)),
+      });
       if (!response.ok) return;
 
       const sessions: SessionInfo[] = await response.json();

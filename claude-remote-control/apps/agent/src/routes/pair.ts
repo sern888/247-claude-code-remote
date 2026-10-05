@@ -6,6 +6,7 @@
 import { Router } from 'express';
 import { createHmac, randomBytes, randomInt, timingSafeEqual } from 'crypto';
 import { config } from '../config.js';
+import { resolveAuthToken } from '../lib/auth.js';
 
 const PAIRING_TTL_MS = 10 * 60 * 1000;
 const CODE_MIN = 100000;
@@ -399,6 +400,10 @@ export function createPairRoutes(): Router {
   });
 
   // GET /pair/info - JSON API for pairing info
+  // Note: /info is public and requires no proof of pairing, so it must NOT
+  // return the long-lived authToken. The token is only handed out where the
+  // caller proves it initiated pairing: /verify (pairing token) and
+  // /code/:code (the 6-digit code).
   router.get('/info', (_req, res) => {
     const { machineId, machineName, agentUrl, token, pairingLink, codeData } = issuePairing();
 
@@ -430,10 +435,14 @@ export function createPairRoutes(): Router {
       return res.status(404).json({ error: 'Code not found or expired' });
     }
 
+    // The 6-digit code (shown only on the agent's own pairing page, rate-limited
+    // and short-lived) is the proof of pairing, so it is safe to return the
+    // long-lived auth token here for the dashboard to store.
     res.json({
       machineId: data.machineId,
       machineName: data.machineName,
       agentUrl: data.agentUrl,
+      authToken: resolveAuthToken(config.agent?.authToken, process.env.AGENT_247_AUTH_TOKEN),
       expiresAt: data.expiresAt,
     });
   });
@@ -452,11 +461,14 @@ export function createPairRoutes(): Router {
       return res.status(401).json({ error: result.error });
     }
 
+    // A valid pairing token proves the user initiated this pairing, so it is
+    // safe to hand back the long-lived auth token the dashboard will use.
     res.json({
       valid: true,
       machineId: result.payload?.mid,
       machineName: result.payload?.mn,
       agentUrl: result.payload?.url,
+      authToken: resolveAuthToken(config.agent?.authToken, process.env.AGENT_247_AUTH_TOKEN),
     });
   });
 

@@ -96,7 +96,7 @@ export class LaunchdService implements ServiceManager {
       keepAlive: true,
       isDev: paths.isDev,
       configPath: paths.configPath,
-      port: loadConfig()?.agent.port,
+      port: loadConfig()?.agent?.port,
     });
 
     writeFileSync(this.plistPath, plistContent, 'utf-8');

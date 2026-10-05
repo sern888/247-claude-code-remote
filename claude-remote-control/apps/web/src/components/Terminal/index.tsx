@@ -13,6 +13,8 @@ import { MinimalSessionHeader } from '@/components/MinimalSessionHeader';
 
 interface TerminalProps {
   agentUrl: string;
+  /** Bearer token the agent requires (from the connection record). */
+  authToken?: string;
   project: string;
   sessionName?: string;
   environmentId?: string;
@@ -30,6 +32,7 @@ interface TerminalProps {
 
 export function Terminal({
   agentUrl,
+  authToken,
   project,
   sessionName,
   environmentId,
@@ -71,6 +74,7 @@ export function Terminal({
   } = useTerminalConnection({
     terminalRef,
     agentUrl,
+    authToken,
     project,
     sessionName: effectiveSessionName,
     environmentId,

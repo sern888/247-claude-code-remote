@@ -156,10 +156,16 @@ password:
 - It listens on loopback only by default and rejects browser requests whose
   `Origin` is not an allowed dashboard, so a web page you merely visit cannot
   talk to it.
-- **It has no authentication.** Anyone who can reach its URL with a non-browser
-  client can open a terminal. A Tailscale Funnel or a public Cloudflare
-  hostname is reachable by the whole internet — prefer tailnet-only access
-  (`tailscale serve`) or put Cloudflare Access in front of the hostname.
+- **It requires a bearer token when one is configured.** `247 init` generates
+  `agent.authToken` (overridable with `AGENT_247_AUTH_TOKEN`); the agent then
+  demands `Authorization: Bearer <token>` on HTTP and a `247.bearer.<token>`
+  WebSocket subprotocol on every route except `/health` and pairing, and the
+  dashboard receives the token during pairing. A legacy install with no
+  `agent.authToken` runs **without** authentication (and logs a warning), so
+  anyone who can reach its URL can open a terminal.
+- Treat the agent's URL as sensitive regardless. A Tailscale Funnel or a public
+  Cloudflare hostname is reachable by the whole internet — prefer tailnet-only
+  access (`tailscale serve`) or put Cloudflare Access in front of the hostname.
 - The deploy scripts for Fly.io and Railway refuse to publish the agent on a
   public URL unless you set `ALLOW_PUBLIC_AGENT=1`.
 

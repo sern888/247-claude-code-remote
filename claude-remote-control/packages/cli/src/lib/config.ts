@@ -1,6 +1,14 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync } from 'fs';
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  readdirSync,
+  unlinkSync,
+  chmodSync,
+} from 'fs';
 import { join } from 'path';
-import { randomUUID } from 'crypto';
+import { randomUUID, randomBytes } from 'crypto';
 import { getAgentPaths, ensureDirectories } from './paths.js';
 
 export interface AgentConfig {
@@ -10,6 +18,11 @@ export interface AgentConfig {
   };
   agent: {
     port: number;
+    /**
+     * Shared secret the agent requires from the dashboard and hooks. Generated
+     * per machine/profile by `247 init`; handed to the dashboard during pairing.
+     */
+    authToken?: string;
   };
   projects: {
     basePath: string;
@@ -246,8 +259,12 @@ export function saveConfig(config: AgentConfig, profileName?: string | null): vo
     }
   }
 
+  // The config holds the agent's bearer token, so keep it readable only by the
+  // owner (mode on writeFileSync applies only when creating; chmod covers an
+  // existing file written under a more permissive umask).
   const content = JSON.stringify(config, null, 2);
-  writeFileSync(configPath, content, 'utf-8');
+  writeFileSync(configPath, content, { encoding: 'utf-8', mode: 0o600 });
+  chmodSync(configPath, 0o600);
 }
 
 /**
@@ -255,6 +272,14 @@ export function saveConfig(config: AgentConfig, profileName?: string | null): vo
  */
 export function generateMachineId(): string {
   return randomUUID();
+}
+
+/**
+ * Generate the agent's auth token: 32 random bytes as hex. Every machine and
+ * profile gets its own, so one leaked token never unlocks another.
+ */
+export function generateAuthToken(): string {
+  return randomBytes(32).toString('hex');
 }
 
 /**
@@ -271,7 +296,8 @@ export function copyConfigForNewProfile(
       id: generateMachineId(),
       name: options.machineName ?? source.machine.name,
     },
-    agent: { ...source.agent, port: options.port },
+    // A copy is a distinct machine, so it gets its own identity and token.
+    agent: { ...source.agent, port: options.port, authToken: generateAuthToken() },
   };
 }
 
@@ -291,6 +317,7 @@ export function createConfig(options: {
     },
     agent: {
       port: options.port ?? DEFAULT_CONFIG.agent.port,
+      authToken: generateAuthToken(),
     },
     projects: {
       basePath: options.projectsPath ?? DEFAULT_CONFIG.projects.basePath,

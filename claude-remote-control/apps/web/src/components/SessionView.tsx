@@ -17,6 +17,8 @@ interface SessionViewProps {
   sessionName: string;
   project: string;
   agentUrl: string;
+  /** Bearer token the agent requires (from the connection record). */
+  authToken?: string;
   sessionInfo?: SessionInfo;
   environmentId?: string;
   planningProjectId?: string;
@@ -35,6 +37,7 @@ export function SessionView({
   sessionName,
   project,
   agentUrl,
+  authToken,
   sessionInfo,
   environmentId,
   planningProjectId,
@@ -68,6 +71,7 @@ export function SessionView({
     <Terminal
       key={terminalKey}
       agentUrl={agentUrl}
+      authToken={authToken}
       project={project}
       sessionName={isNewSession ? undefined : sessionName}
       environmentId={environmentId}

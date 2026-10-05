@@ -104,7 +104,7 @@ export class SystemdService implements ServiceManager {
       workingDirectory: paths.agentRoot,
       isDev: paths.isDev,
       configPath: paths.configPath,
-      port: loadConfig()?.agent.port,
+      port: loadConfig()?.agent?.port,
     });
 
     writeFileSync(this.unitPath, unitContent, 'utf-8');

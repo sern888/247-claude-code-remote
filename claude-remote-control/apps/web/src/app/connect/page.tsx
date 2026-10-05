@@ -13,6 +13,8 @@ interface AgentInfo {
   agentUrl: string;
   valid: boolean;
   error?: string;
+  /** Bearer token the agent requires, captured from pairing verification. */
+  authToken?: string;
 }
 
 // Confetti component for success celebration
@@ -142,6 +144,7 @@ function ConnectContent() {
           name: agentInfo.machineName,
           machineId: agentInfo.machineId,
           method: agentInfo.agentUrl.includes('.ts.net') ? 'tailscale' : 'custom',
+          authToken: agentInfo.authToken,
         }),
       });
 

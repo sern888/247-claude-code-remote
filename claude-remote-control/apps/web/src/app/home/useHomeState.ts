@@ -40,6 +40,7 @@ function connectionToMachine(connection: StoredAgentConnection): LocalMachine {
     config: {
       projects: [],
       agentUrl: connection.url,
+      authToken: connection.authToken,
     },
   };
 }
@@ -358,6 +359,12 @@ export function useHomeState() {
     return connection?.url || '';
   }, [selectedSession, agentConnections]);
 
+  const getAuthToken = useCallback(() => {
+    if (!selectedSession) return undefined;
+    const connection = agentConnections.find((c) => c.id === selectedSession.machineId);
+    return connection?.authToken;
+  }, [selectedSession, agentConnections]);
+
   const getSelectedSessionInfo = useCallback(() => {
     if (!selectedSession) return undefined;
     return allSessions.find(
@@ -388,6 +395,7 @@ export function useHomeState() {
     // Data fetchers
     getArchivedSessions,
     getAgentUrl,
+    getAuthToken,
     getSelectedSessionInfo,
 
     // Handlers

@@ -8,6 +8,7 @@ export const DEFAULT_CONNECTION_METHOD: ConnectionMethod = 'tailscale';
 const MAX_URL_LENGTH = 255;
 const MAX_NAME_LENGTH = 100;
 const MAX_MACHINE_ID_LENGTH = 100;
+const MAX_AUTH_TOKEN_LENGTH = 512;
 const HEX_COLOR_PATTERN = /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
 const WHITESPACE_PATTERN = /\s/;
 
@@ -17,6 +18,7 @@ export interface NewConnectionInput {
   method: ConnectionMethod;
   color: string | null | undefined;
   machineId: string | undefined;
+  authToken: string | undefined;
 }
 
 export interface ConnectionUpdateInput {
@@ -24,6 +26,7 @@ export interface ConnectionUpdateInput {
   name?: string;
   method?: ConnectionMethod;
   color?: string | null;
+  authToken?: string | null;
 }
 
 function isAbsent(value: unknown): value is undefined | null {
@@ -82,6 +85,18 @@ function parseMachineId(value: unknown): ValidationResult<string | undefined> {
   return { ok: true, value };
 }
 
+/** `null` clears the token, `undefined` leaves it untouched. */
+function parseAuthToken(value: unknown): ValidationResult<string | null | undefined> {
+  if (isAbsent(value)) return { ok: true, value };
+  if (!isBoundedString(value, MAX_AUTH_TOKEN_LENGTH) || WHITESPACE_PATTERN.test(value)) {
+    return {
+      ok: false,
+      error: `authToken must be a non-empty string without whitespace (max ${MAX_AUTH_TOKEN_LENGTH} characters)`,
+    };
+  }
+  return { ok: true, value };
+}
+
 /** Validate the body of POST /api/connections. */
 export function parseNewConnection(body: JsonObject): ValidationResult<NewConnectionInput> {
   const url = parseUrl(body.url);
@@ -101,6 +116,9 @@ export function parseNewConnection(body: JsonObject): ValidationResult<NewConnec
   const machineId = parseMachineId(body.machineId);
   if (!machineId.ok) return machineId;
 
+  const authToken = parseAuthToken(body.authToken);
+  if (!authToken.ok) return authToken;
+
   return {
     ok: true,
     value: {
@@ -109,6 +127,7 @@ export function parseNewConnection(body: JsonObject): ValidationResult<NewConnec
       method: method.value,
       color: color.value,
       machineId: machineId.value,
+      authToken: typeof authToken.value === 'string' ? authToken.value : undefined,
     },
   };
 }
@@ -127,15 +146,22 @@ export function parseConnectionUpdate(body: JsonObject): ValidationResult<Connec
   const color = parseColor(body.color);
   if (!color.ok) return color;
 
+  const authToken = parseAuthToken(body.authToken);
+  if (!authToken.ok) return authToken;
+
   const update: ConnectionUpdateInput = {
     ...(url ? { url: url.value } : {}),
     ...(name ? { name: name.value } : {}),
     ...(method ? { method: method.value } : {}),
     ...(color.value !== undefined ? { color: color.value } : {}),
+    ...(authToken.value !== undefined ? { authToken: authToken.value } : {}),
   };
 
   if (Object.keys(update).length === 0) {
-    return { ok: false, error: 'At least one of url, name, method or color is required' };
+    return {
+      ok: false,
+      error: 'At least one of url, name, method, color or authToken is required',
+    };
   }
 
   return { ok: true, value: update };

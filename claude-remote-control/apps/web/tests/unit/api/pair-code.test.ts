@@ -131,6 +131,15 @@ describe('/api/pair/code', () => {
       });
     });
 
+    it('returns the registered authToken to complete the bearer handoff', async () => {
+      await register(registration('300010', { authToken: 'tok-abc123' }));
+
+      const res = await lookup('300010');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ authToken: 'tok-abc123' });
+    });
+
     it('consumes the code: a second lookup returns 404', async () => {
       await register(registration('300002'));
 

@@ -42,6 +42,7 @@ vi.mock('fs', () => ({
   writeFileSync: vi.fn((path: string, content: string) => {
     fsState?.files.set(path, content);
   }),
+  chmodSync: vi.fn(),
   mkdirSync: vi.fn((path: string) => {
     fsState?.directories.add(path);
   }),

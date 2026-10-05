@@ -43,6 +43,7 @@ vi.mock('fs', () => {
     writeFileSync: vi.fn((path: string, content: string) => {
       fsState?.files.set(path, content);
     }),
+    chmodSync: vi.fn(),
     mkdirSync: vi.fn((path: string) => {
       fsState?.directories.add(path);
     }),
@@ -60,6 +61,7 @@ vi.mock('fs', () => {
 // Mock crypto for UUID generation
 vi.mock('crypto', () => ({
   randomUUID: () => 'generated-uuid-1234',
+  randomBytes: (size: number) => Buffer.alloc(size, 1),
 }));
 
 // Mock child_process for prerequisite checks

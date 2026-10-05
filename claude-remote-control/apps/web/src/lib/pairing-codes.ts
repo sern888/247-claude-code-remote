@@ -9,6 +9,8 @@ export interface PairingCodeInfo {
   machineId: string;
   machineName: string;
   agentUrl: string;
+  /** Bearer token the agent requires, carried through the code pairing flow. */
+  authToken?: string;
   createdAt: number;
   expiresAt: number;
 }

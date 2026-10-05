@@ -14,6 +14,13 @@ import * as sessionsDb from './db/sessions.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { buildAllowedOrigins, isOriginAllowed } from './lib/origin.js';
+import {
+  resolveAuthToken,
+  isAuthorized,
+  extractBearerToken,
+  extractWebSocketToken,
+  WS_TOKEN_PROTOCOL_PREFIX,
+} from './lib/auth.js';
 import { listSessionNamesSync } from './lib/tmux.js';
 
 // Routes
@@ -43,6 +50,26 @@ export async function createServer() {
     envValue: process.env.AGENT_247_ALLOWED_ORIGINS,
   });
 
+  // The shared secret that gates the shell surface. When unset the agent runs
+  // without authentication, which keeps pre-token installs working but leaves
+  // anyone who can reach the port able to open a terminal.
+  const expectedToken = resolveAuthToken(config.agent?.authToken, process.env.AGENT_247_AUTH_TOKEN);
+  if (!expectedToken) {
+    logger.server.warn(
+      'No agent.authToken configured: running WITHOUT authentication. ' +
+        'Anyone who can reach this agent can open a terminal. Run `247 init` to add a token.'
+    );
+  }
+
+  // Pairing and health must stay reachable without a token: pairing is how the
+  // dashboard obtains the token in the first place, and health is for probes.
+  const isPublicPath = (path: string): boolean =>
+    path === '/health' ||
+    path === '/pair' ||
+    path.startsWith('/pair/') ||
+    path === '/api/pair' ||
+    path.startsWith('/api/pair/');
+
   const app = express();
 
   // The agent hands out a shell: a web page the user merely visits must not
@@ -60,10 +87,40 @@ export async function createServer() {
       origin: (origin, callback) => callback(null, isOriginAllowed(origin, allowedOrigins)),
     })
   );
+
+  // Require the bearer token on everything except health, pairing and CORS
+  // preflight (which carries no Authorization header). A no-op when auth is
+  // disabled (expectedToken undefined).
+  app.use((req, res, next) => {
+    if (req.method === 'OPTIONS' || isPublicPath(req.path)) {
+      next();
+      return;
+    }
+    if (!isAuthorized(extractBearerToken(req.headers.authorization), expectedToken)) {
+      logger.server.warn({ path: req.path }, 'Rejected unauthenticated request');
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    next();
+  });
+
   app.use(express.json());
 
   const server = createHttpServer(app);
-  const wss = new WebSocketServer({ noServer: true });
+  // Echo back the token-bearing subprotocol so the browser's WebSocket
+  // handshake completes (a browser that offered a subprotocol expects the
+  // server to confirm one). Other offered subprotocols are ignored.
+  const wss = new WebSocketServer({
+    noServer: true,
+    handleProtocols: (protocols) => {
+      for (const protocol of protocols) {
+        if (protocol.startsWith(WS_TOKEN_PROTOCOL_PREFIX)) {
+          return protocol;
+        }
+      }
+      return false;
+    },
+  });
 
   // Initialize SQLite database
   initDatabase();
@@ -103,6 +160,13 @@ export async function createServer() {
       if (!isOriginAllowed(req.headers.origin, allowedOrigins)) {
         logger.server.warn({ origin: req.headers.origin }, 'Rejected WebSocket origin');
         rejectUpgrade(socket, '403 Forbidden');
+        return;
+      }
+
+      const wsToken = extractWebSocketToken(req.headers['sec-websocket-protocol']);
+      if (!isAuthorized(wsToken, expectedToken)) {
+        logger.server.warn('Rejected unauthenticated WebSocket upgrade');
+        rejectUpgrade(socket, '401 Unauthorized');
         return;
       }
 

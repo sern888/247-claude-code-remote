@@ -379,6 +379,9 @@ function AddAgentForm({
 
     setTestState('testing');
     try {
+      // No auth token here on purpose: this tests a manually entered URL, which
+      // has no paired token. A token-protected agent is added via pairing (which
+      // carries its token), not by manual URL entry.
       const wsUrl = buildWebSocketUrl(fullUrl, '/terminal?project=test&session=test-connection');
       const ws = new WebSocket(wsUrl);
 
